@@ -15,7 +15,7 @@
     "type": "list",
     "default": ["https://api.warframestat.us"],
     "description": "WarframeStat API 基础地址列表",
-    "hint": "用于仲裁/电波回退数据源。可填写你自建反向代理地址（如 https://stat.example.com）。插件会按顺序尝试：{base}/{platform}/{endpoint}。"
+    "hint": "用于世界状态、仲裁和电波的回退数据源。可填写自建反向代理地址（如 https://stat.example.com）。完整状态按 {base}/{platform}?language=zh 请求，单项数据按 {base}/{platform}/{endpoint} 请求。"
   },
   "unknown_abbrev_provider_id": {
     "type": "string",
