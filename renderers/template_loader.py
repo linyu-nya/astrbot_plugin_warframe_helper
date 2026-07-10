@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import contextvars
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from jinja2 import Environment
+
+from .render_theme import RenderTheme
 
 _TEMPLATE_NAME = "default"
 _VALID_TEMPLATE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CURRENT_COMMAND = contextvars.ContextVar("wf_render_command", default="")
 _CURRENT_TEMPLATE_NAME = contextvars.ContextVar("wf_render_template_name", default="")
 _JINJA_ENV = Environment(autoescape=True)
+_RENDER_THEME_RESOLVER: Callable[[str, str], RenderTheme] | None = None
 
 _WORLD_CYCLE_COMMANDS = {
     "平原",
@@ -92,6 +96,13 @@ def set_current_render_template_name(name: str | None) -> None:
         _CURRENT_TEMPLATE_NAME.set("")
         return
     _CURRENT_TEMPLATE_NAME.set(s)
+
+
+def set_render_theme_resolver(
+    resolver: Callable[[str, str], RenderTheme] | None,
+) -> None:
+    global _RENDER_THEME_RESOLVER
+    _RENDER_THEME_RESOLVER = resolver
 
 
 def has_render_template_name(name: str | None) -> bool:
@@ -183,10 +194,12 @@ def load_html_template(
     template_name: str | None = None,
 ) -> str:
     tpl = ""
+    selected_path: Path | None = None
     for path in _template_file_candidates(filename, template_name=template_name):
         try:
             if path.exists() and path.is_file():
                 tpl = path.read_text(encoding="utf-8")
+                selected_path = path
                 break
         except Exception:
             continue
@@ -195,7 +208,20 @@ def load_html_template(
         return ""
 
     try:
+        render_context = dict(context or {})
+        if "render_theme" not in render_context:
+            theme = RenderTheme(enabled=False, css="", scope="default")
+            resolver = _RENDER_THEME_RESOLVER
+            if resolver is not None and selected_path is not None:
+                try:
+                    theme = resolver(
+                        selected_path.name,
+                        _normalize_command_key(_CURRENT_COMMAND.get()),
+                    )
+                except Exception:
+                    theme = RenderTheme(enabled=False, css="", scope="default")
+            render_context["render_theme"] = theme
         template = _JINJA_ENV.from_string(tpl)
-        return str(template.render(**(context or {})))
+        return str(template.render(**render_context))
     except Exception:
         return ""
