@@ -126,6 +126,7 @@ async def fetch_bytes(
     *,
     timeout_sec: float = 20.0,
     headers: dict[str, str] | None = None,
+    max_bytes: int | None = None,
 ) -> bytes | None:
     url_list = [urls] if isinstance(urls, str) else [u for u in urls if u]
     if not url_list:
@@ -143,7 +144,11 @@ async def fetch_bytes(
                     if resp.status != 200:
                         last_err = f"{resp.status} {url}"
                         continue
-                    return await resp.read()
+                    payload = await _read_response_bytes(resp, max_bytes=max_bytes)
+                    if payload is None:
+                        last_err = f"response exceeds byte limit ({url})"
+                        continue
+                    return payload
             except Exception as exc:
                 last_err = f"{exc!s} ({url})"
                 continue
@@ -151,6 +156,29 @@ async def fetch_bytes(
         if last_err:
             logger.warning(f"http fetch_bytes failed: {last_err}")
         return None
+
+
+async def _read_response_bytes(
+    response: Any,
+    *,
+    max_bytes: int | None,
+) -> bytes | None:
+    limit = None if max_bytes is None else max(0, int(max_bytes))
+    if limit is not None:
+        raw_length = response.headers.get("Content-Length")
+        try:
+            content_length = int(raw_length) if raw_length is not None else None
+        except (TypeError, ValueError):
+            content_length = None
+        if content_length is not None and content_length > limit:
+            return None
+
+    payload = bytearray()
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        if limit is not None and len(payload) + len(chunk) > limit:
+            return None
+        payload.extend(chunk)
+    return bytes(payload)
 
 
 async def fetch_json(
