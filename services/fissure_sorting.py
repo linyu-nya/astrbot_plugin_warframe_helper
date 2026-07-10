@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Protocol, TypeVar
 
 from ..helpers import eta_key_zh
@@ -31,6 +31,13 @@ _TIER_RANK = {
     for rank, aliases in enumerate(_TIER_ORDER)
     for alias in aliases
 }
+
+
+def fissure_tier_sort_enabled(config: object) -> bool:
+    if not isinstance(config, Mapping):
+        return True
+    value = config.get("fissure_tier_sort_enabled")
+    return value if isinstance(value, bool) else True
 
 
 def sort_fissures(

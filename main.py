@@ -43,6 +43,7 @@ from .renderers.worldstate_render import (
     render_worldstate_rows_image_to_file,
 )
 from .services import drop_data_commands, public_export_commands, worldstate_commands
+from .services.fissure_sorting import fissure_tier_sort_enabled
 from .services.market.pager import cmd_wfp
 from .services.market.wm import cmd_wm
 from .services.market.wmr import cmd_wmr
@@ -382,6 +383,7 @@ class WarframeHelperPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context, config)
         self.config = config
+        self._fissure_tier_sort_enabled = fissure_tier_sort_enabled(self.config)
 
         self._default_render_template = _parse_render_template_name(self.config)
         set_render_template_name(self._default_render_template)
@@ -1533,6 +1535,7 @@ class WarframeHelperPlugin(Star):
             event=event,
             raw_args=str(args),
             worldstate_client=self.worldstate_client,
+            tier_first=self._fissure_tier_sort_enabled,
         )
         if await self._try_send_qq_markdown_for_result(
             event=event,
@@ -1556,6 +1559,7 @@ class WarframeHelperPlugin(Star):
             raw_args=str(args),
             worldstate_client=self.worldstate_client,
             fissure_kind="九重天",
+            tier_first=self._fissure_tier_sort_enabled,
         )
         if await self._try_send_qq_markdown_for_result(
             event=event,
@@ -1579,6 +1583,7 @@ class WarframeHelperPlugin(Star):
             raw_args=str(args),
             worldstate_client=self.worldstate_client,
             fissure_kind="钢铁",
+            tier_first=self._fissure_tier_sort_enabled,
         )
         if await self._try_send_qq_markdown_for_result(
             event=event,
@@ -1602,6 +1607,7 @@ class WarframeHelperPlugin(Star):
             raw_args=str(args),
             worldstate_client=self.worldstate_client,
             fissure_kind="普通",
+            tier_first=self._fissure_tier_sort_enabled,
         )
         if await self._try_send_qq_markdown_for_result(
             event=event,

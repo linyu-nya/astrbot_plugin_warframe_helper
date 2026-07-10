@@ -268,6 +268,7 @@ async def cmd_fissures(
     event: AstrMessageEvent,
     raw_args: str,
     worldstate_client: WarframeWorldstateClient,
+    tier_first: bool,
 ):
     tokens = split_tokens(str(raw_args))
     platform_norm = worldstate_platform_from_tokens(tokens)
@@ -277,6 +278,7 @@ async def cmd_fissures(
         worldstate_client=worldstate_client,
         platform_norm=platform_norm,
         fissure_kind=fissure_kind,
+        tier_first=tier_first,
     )
     if rendered:
         return event.image_result(rendered.path)
@@ -285,6 +287,7 @@ async def cmd_fissures(
         worldstate_client=worldstate_client,
         platform_norm=platform_norm,
         fissure_kind=fissure_kind,
+        tier_first=tier_first,
     )
     return event.plain_result(text)
 
@@ -295,6 +298,7 @@ async def cmd_fissures_kind(
     raw_args: str,
     worldstate_client: WarframeWorldstateClient,
     fissure_kind: str,
+    tier_first: bool,
 ):
     tokens = split_tokens(str(raw_args))
     platform_norm = worldstate_platform_from_tokens(tokens)
@@ -303,6 +307,7 @@ async def cmd_fissures_kind(
         worldstate_client=worldstate_client,
         platform_norm=platform_norm,
         fissure_kind=fissure_kind,
+        tier_first=tier_first,
     )
     if rendered:
         return event.image_result(rendered.path)
@@ -311,6 +316,7 @@ async def cmd_fissures_kind(
         worldstate_client=worldstate_client,
         platform_norm=platform_norm,
         fissure_kind=fissure_kind,
+        tier_first=tier_first,
     )
     return event.plain_result(text)
 

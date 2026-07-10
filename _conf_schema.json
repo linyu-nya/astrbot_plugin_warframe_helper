@@ -17,6 +17,12 @@
     "description": "WarframeStat API 基础地址列表",
     "hint": "用于世界状态、仲裁和电波的回退数据源。可填写自建反向代理地址（如 https://stat.example.com）。完整状态按 {base}/{platform}?language=zh 请求，单项数据按 {base}/{platform}/{endpoint} 请求。"
   },
+  "fissure_tier_sort_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "裂缝按纪元排序",
+    "hint": "开启后按古前中后安魂全能排序，同纪元按剩余时间；关闭后仅按剩余时间。"
+  },
   "unknown_abbrev_provider_id": {
     "type": "string",
     "default": "",

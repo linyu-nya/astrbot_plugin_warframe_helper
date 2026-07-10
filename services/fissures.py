@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import cast
 
 from ..clients.worldstate_client import Platform, WarframeWorldstateClient
-from ..helpers import eta_key_zh
 from ..renderers.worldstate_render import (
     WorldstateRow,
     render_worldstate_rows_image_to_file,
 )
+from .fissure_sorting import sort_fissures
 
 
 async def render_fissures_text(
@@ -15,6 +15,7 @@ async def render_fissures_text(
     worldstate_client: WarframeWorldstateClient,
     platform_norm: Platform,
     fissure_kind: str,
+    tier_first: bool,
 ) -> str:
     fissures = await worldstate_client.fetch_fissures(
         platform=platform_norm, language="zh"
@@ -35,7 +36,7 @@ async def render_fissures_text(
     if not picked:
         return f"当前无{fissure_kind}裂缝（{platform_norm}）。"
 
-    picked.sort(key=lambda x: eta_key_zh(x.eta))
+    picked = sort_fissures(picked, tier_first=tier_first)
 
     lines: list[str] = [f"裂缝（{platform_norm}）{fissure_kind} 共{len(picked)}条："]
     for f in picked:
@@ -49,6 +50,7 @@ async def render_fissures_image(
     worldstate_client: WarframeWorldstateClient,
     platform_norm: Platform,
     fissure_kind: str,
+    tier_first: bool,
 ):
     fissures = await worldstate_client.fetch_fissures(
         platform=platform_norm, language="zh"
@@ -69,7 +71,7 @@ async def render_fissures_image(
     if not picked:
         return None
 
-    picked.sort(key=lambda x: eta_key_zh(x.eta))
+    picked = sort_fissures(picked, tier_first=tier_first)
 
     def row_accent(f):
         if f.is_hard:
