@@ -22,10 +22,10 @@ Platform = Literal["pc", "cn", "ps4", "xb1", "swi"]
 
 
 OFFICIAL_WORLDSTATE_URLS: list[str] = [
-    # In some environments api.warframe.com may return 403.
-    # content.warframe.com is typically accessible and returns the same payload.
-    "https://content.warframe.com/dynamic/worldState.php",
+    # The CDN endpoint is the live official source. The legacy content endpoint is
+    # retained as a secondary candidate because availability varies by region.
     "https://api.warframe.com/cdn/worldState.php",
+    "https://content.warframe.com/dynamic/worldState.php",
 ]
 
 
@@ -112,6 +112,7 @@ def _is_worldstate_like(payload: Any) -> bool:
         "Alerts",
         "alerts",
         "ActiveMissions",
+        "fissures",
         "events",
         "Sorties",
         "sortie",
@@ -186,6 +187,25 @@ def _warframestat_urls(
         b = base.rstrip("/")
         urls.append(f"{b}/{platform_norm}/{ep}")
         urls.append(f"{b}/{platform_norm}/{ep}/")
+    return urls
+
+
+def _warframestat_worldstate_urls(
+    platform: Platform,
+    language: str,
+    *,
+    api_bases: list[str] | None = None,
+    proxy_bases: list[str] | None = None,
+) -> list[str]:
+    platform_norm = _platform_for_warframestat(platform)
+    lang = (language or "en").strip().lower() or "en"
+    urls: list[str] = []
+    api = _normalize_base_urls(api_bases) or list(WARFRAMESTAT_API_BASES)
+    proxies = _normalize_base_urls(proxy_bases) or list(WARFRAMESTAT_PROXY_BASES)
+    for base in [*api, *proxies]:
+        url = f"{base.rstrip('/')}/{platform_norm}"
+        sep = "&" if "?" in url else "?"
+        urls.append(f"{url}{sep}language={lang}")
     return urls
 
 
@@ -729,6 +749,16 @@ class WarframeWorldstateClient:
             proxy_bases=self._warframestat_proxy_bases,
         )
 
+    def _warframestat_worldstate_urls(
+        self, platform: Platform, language: str
+    ) -> list[str]:
+        return _warframestat_worldstate_urls(
+            platform,
+            language,
+            api_bases=self._warframestat_api_bases,
+            proxy_bases=self._warframestat_proxy_bases,
+        )
+
     def _unwrap_cn_worldstate_payload(self, payload: Any) -> Any | None:
         if not isinstance(payload, dict):
             return payload
@@ -1131,10 +1161,33 @@ class WarframeWorldstateClient:
                     urls,
                     timeout_sec=effective_timeout,
                 )
+        extracted = _extract_worldstate_payload(data)
+        if extracted is not None:
+            data = extracted
+        elif data is not None:
+            logger.warning(
+                f"worldstate payload invalid for platform={platform_norm}; "
+                "trying WarframeStat aggregate fallback"
+            )
+            data = None
+
+        if data is None:
+            fallback_urls = self._warframestat_worldstate_urls(
+                platform_norm, lang
+            )
+            data = await self._fetch_json_resilient(
+                fallback_urls,
+                timeout_sec=effective_timeout,
+            )
+            extracted = _extract_worldstate_payload(data)
+            data = extracted if extracted is not None else None
+
         if data is None:
             logger.warning(
                 f"worldstate fetch failed for platform={platform_norm} "
-                f"timeout={effective_timeout:.1f}s urls={urls[:4]}"
+                f"timeout={effective_timeout:.1f}s "
+                f"official_urls={urls[:4]} "
+                f"fallback_urls={fallback_urls[:4]}"
             )
             return None
 
@@ -1146,7 +1199,50 @@ class WarframeWorldstateClient:
         if not node:
             return "?"
         translated = await self._public_export.translate_region(node, language=language)
-        return _simplify_zh_text(translated or node, language=language) or "?"
+        text = _simplify_zh_text(translated or node, language=language) or "?"
+        if not (language or "").strip().lower().startswith("zh"):
+            return text
+
+        planets = {
+            "mercury": "水星",
+            "venus": "金星",
+            "earth": "地球",
+            "lua": "月球",
+            "mars": "火星",
+            "deimos": "火卫二",
+            "phobos": "火卫一",
+            "ceres": "谷神星",
+            "jupiter": "木星",
+            "europa": "欧罗巴",
+            "saturn": "土星",
+            "uranus": "天王星",
+            "neptune": "海王星",
+            "pluto": "冥王星",
+            "sedna": "赛德娜",
+            "eris": "阋神星",
+            "void": "虚空",
+            "kuva fortress": "赤毒要塞",
+            "zariman": "扎里曼",
+            "duviri": "双衍王境",
+            "sanctum anatomica": "解剖圣所",
+            "höllvania": "霍尔瓦尼亚",
+            "hollvania": "霍尔瓦尼亚",
+        }
+        display_match = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", text)
+        if display_match:
+            node_name = display_match.group(1).strip()
+            system_name = display_match.group(2).strip()
+            localized_system = planets.get(system_name.casefold())
+            if localized_system:
+                return f"{node_name} ({localized_system})"
+
+        for localized_system in planets.values():
+            prefix = f"{localized_system}·"
+            if text.startswith(prefix):
+                node_name = text[len(prefix) :].strip()
+                if node_name:
+                    return f"{node_name} ({localized_system})"
+        return text
 
     async def _item_name(self, unique_name: str, *, language: str) -> str | None:
         mapped = await self._public_export.translate_unique_name(
@@ -1188,7 +1284,33 @@ class WarframeWorldstateClient:
             "MT_VOID_CASCADE": "虚空瀑流",
             "MT_CORRUPTION": "腐化",
         }
-        return mt.get(code, code.replace("MT_", "") or "?")
+        if code in mt:
+            return mt[code]
+        display_names = {
+            "extermination": "歼灭",
+            "survival": "生存",
+            "defense": "防御",
+            "mobile defense": "移动防御",
+            "rescue": "救援",
+            "sabotage": "破坏",
+            "capture": "捕获",
+            "interception": "拦截",
+            "hijack": "劫持",
+            "assassination": "刺杀",
+            "spy": "间谍",
+            "excavation": "挖掘",
+            "disruption": "中断",
+            "alchemy": "炼金",
+            "void cascade": "虚空瀑流",
+            "void flood": "虚空洪流",
+            "void armageddon": "虚空决战",
+            "mirror defense": "镜像防御",
+            "defection": "叛逃",
+            "assault": "强袭",
+            "arena": "竞技场",
+            "hive": "清巢",
+        }
+        return display_names.get(code.casefold(), code.replace("MT_", "") or "?")
 
     def _fissure_tier_cn(self, modifier: str | None) -> str:
         modifier = (modifier or "").strip()
@@ -1200,7 +1322,17 @@ class WarframeWorldstateClient:
             "VoidT5": "安魂",
             "VoidT6": "全能",
         }
-        return tier.get(modifier, modifier or "?")
+        if modifier in tier:
+            return tier[modifier]
+        display_names = {
+            "lith": "古纪",
+            "meso": "前纪",
+            "neo": "中纪",
+            "axi": "后纪",
+            "requiem": "安魂",
+            "omnia": "全能",
+        }
+        return display_names.get(modifier.casefold(), modifier or "?")
 
     async def _mission_type_name(self, code: str | None, *, language: str) -> str:
         raw = (code or "").strip()
