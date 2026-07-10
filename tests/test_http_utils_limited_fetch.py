@@ -69,4 +69,3 @@ async def test_invalid_content_length_falls_back_to_stream_limit():
 
     assert result is None
     assert response.content.yielded == 2
-
