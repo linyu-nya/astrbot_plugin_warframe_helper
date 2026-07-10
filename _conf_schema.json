@@ -36,6 +36,103 @@
     "description": "图片缓存目录",
     "hint": "渲染图片的缓存目录。为空时使用 AstrBot 默认临时目录；支持绝对路径，或相对于默认临时目录的相对路径。"
   },
+  "render_background": {
+    "type": "object",
+    "description": "自定义渲染底图",
+    "hint": "为图片回复设置全局或分类底图。分类底图为空或加载失败时自动使用全局底图；全局底图不可用时保留原模板背景。保存后需重载插件。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "启用自定义底图",
+        "hint": "总开关。关闭后不会读取本地图片或下载远程图片，所有回复保持原模板样式。"
+      },
+      "default_source": {
+        "type": "string",
+        "default": "",
+        "description": "全局默认底图",
+        "hint": "填写本地绝对路径、相对插件目录的路径或 HTTP(S) URL；分类未覆盖时使用此图片。"
+      },
+      "fissure_source": {
+        "type": "string",
+        "default": "",
+        "description": "裂缝底图",
+        "hint": "普通、钢铁和九重天裂缝的覆盖底图；为空或加载失败时回退全局底图。"
+      },
+      "market_source": {
+        "type": "string",
+        "default": "",
+        "description": "价格底图",
+        "hint": "用于 wm、wmr、wfp 价格卡；为空或加载失败时回退全局底图。"
+      },
+      "worldstate_source": {
+        "type": "string",
+        "default": "",
+        "description": "世界状态底图",
+        "hint": "用于周期、活动、赏金和通用世界状态卡；为空或加载失败时回退全局底图。"
+      },
+      "background_fit": {
+        "type": "string",
+        "default": "cover",
+        "description": "底图填充方式",
+        "hint": "可选 cover、contain、width、repeat-y；均保持原始宽高比，不拉伸图片。"
+      },
+      "background_position": {
+        "type": "string",
+        "default": "center center",
+        "description": "底图位置",
+        "hint": "支持 center top、left center、50% 20% 等安全 CSS 背景位置写法。"
+      },
+      "overlay_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用底图遮罩",
+        "hint": "在底图上增加统一颜色遮罩，降低复杂背景对文字可读性的影响。"
+      },
+      "overlay_color": {
+        "type": "string",
+        "default": "#0f172a",
+        "description": "遮罩颜色",
+        "hint": "仅支持 #RGB 或 #RRGGBB 十六进制颜色。"
+      },
+      "overlay_opacity": {
+        "type": "int",
+        "default": 42,
+        "description": "遮罩不透明度",
+        "hint": "范围 0-100；数值越高，底图越暗。"
+      },
+      "panel_color": {
+        "type": "string",
+        "default": "#0f172a",
+        "description": "内容面板颜色",
+        "hint": "卡片和标题面板颜色，仅支持 #RGB 或 #RRGGBB。"
+      },
+      "panel_opacity": {
+        "type": "int",
+        "default": 58,
+        "description": "内容面板不透明度",
+        "hint": "范围 0-100；数值越低，透出的底图越多。"
+      },
+      "glass_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用毛玻璃效果",
+        "hint": "独立控制内容面板的毛玻璃模糊；关闭后仍保留底图和半透明面板。"
+      },
+      "blur_px": {
+        "type": "int",
+        "default": 6,
+        "description": "毛玻璃模糊程度",
+        "hint": "范围 0-30px，仅在毛玻璃开关启用时生效。"
+      },
+      "text_mode": {
+        "type": "string",
+        "default": "light",
+        "description": "文字明暗模式",
+        "hint": "可选 light 或 dark；深色底图通常使用 light，浅色底图可使用 dark。"
+      }
+    }
+  },
   "enable_no_prefix_commands": {
     "type": "bool",
     "default": false,

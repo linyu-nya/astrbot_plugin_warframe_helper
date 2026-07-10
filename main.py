@@ -29,12 +29,14 @@ from .renderers.html_snapshot import (
     configure_image_cache,
     start_playwright_runtime_prepare,
 )
+from .renderers.background_runtime import BackgroundThemeRuntime
 from .renderers.template_loader import (
     has_render_template_name,
     list_available_render_template_names,
     set_current_render_command,
     set_current_render_template_name,
     set_render_template_name,
+    set_render_theme_resolver,
 )
 from .renderers.worldstate_render import (
     WorldstateRow,
@@ -383,6 +385,12 @@ class WarframeHelperPlugin(Star):
 
         self._default_render_template = _parse_render_template_name(self.config)
         set_render_template_name(self._default_render_template)
+        self._background_runtime = BackgroundThemeRuntime.from_config(
+            self.config,
+            plugin_root=Path(__file__).resolve().parent,
+            warning=logger.warning,
+        )
+        set_render_theme_resolver(self._background_runtime.resolve)
         self._session_render_templates: dict[str, str] = {}
         set_render_template_resolver(self._resolve_session_template)
         self._enable_no_prefix_commands = _parse_enable_no_prefix_commands(self.config)
@@ -463,6 +471,7 @@ class WarframeHelperPlugin(Star):
     async def initialize(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
         start_playwright_runtime_prepare()
+        await self._background_runtime.initialize()
         await self.term_mapper.initialize()
         await self.riven_weapon_mapper.initialize()
         await self.riven_stat_mapper.initialize()
@@ -496,6 +505,7 @@ class WarframeHelperPlugin(Star):
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         await self._subscriptions.stop()
+        set_render_theme_resolver(None)
 
     async def _on_qq_interaction_create(self, bot: object, interaction: object) -> None:
         self._debug_log(
