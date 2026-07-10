@@ -85,8 +85,11 @@
 
     .right { font-size: 34px; line-height: 1.05; font-weight: 780; color: #2563eb; text-align: right; flex: none; }
   </style>
+  {% if render_theme and render_theme.enabled %}
+  <style>{{ render_theme.css | safe }}</style>
+  {% endif %}
 </head>
-<body>
+<body{% if render_theme and render_theme.enabled %} class="wf-custom-background"{% endif %}>
     {#
     模板: wmr.html（指令 /wmr）
     渲染器: renderers/wmr_render.py

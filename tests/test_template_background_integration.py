@@ -13,6 +13,20 @@ from astrbot_plugin_warframe_helper.renderers.template_loader import (
     set_render_theme_resolver,
 )
 
+_BUILTIN_TEMPLATES = [
+    "status_list.html",
+    "cycle_status.html",
+    "event.html",
+    "guide.html",
+    "lookup.html",
+    "subscription.html",
+    "crack.html",
+    "赏金.html",
+    "wm.html",
+    "wfp.html",
+    "wmr.html",
+]
+
 
 @pytest.fixture(autouse=True)
 def _reset_template_render_state():
@@ -154,3 +168,36 @@ def test_template_candidate_fallback_still_selects_first_existing_file(
     )
 
     assert html == "fallback-ok|preserved"
+
+
+@pytest.mark.parametrize("filename", _BUILTIN_TEMPLATES)
+def test_builtin_template_opts_into_enabled_theme(filename: str):
+    marker = ".wf-custom-background{--builtin-theme:1}"
+    set_render_theme_resolver(
+        lambda _filename, _command: RenderTheme(
+            enabled=True,
+            css=marker,
+            scope="default",
+        )
+    )
+
+    html = load_html_template(filename=filename, context={"page": {}})
+
+    assert marker in html
+    assert 'class="wf-custom-background"' in html
+
+
+@pytest.mark.parametrize("filename", _BUILTIN_TEMPLATES)
+def test_builtin_template_preserves_original_output_when_theme_disabled(filename: str):
+    set_render_theme_resolver(
+        lambda _filename, _command: RenderTheme(
+            enabled=False,
+            css=".wf-custom-background{--must-not-render:1}",
+            scope="default",
+        )
+    )
+
+    html = load_html_template(filename=filename, context={"page": {}})
+
+    assert "--must-not-render" not in html
+    assert 'class="wf-custom-background"' not in html

@@ -63,8 +63,11 @@
 		.row-tag { font-size: 17px; line-height: 1.2; color: #1e293b; background: var(--tag-bg); border: 1px solid var(--tag-line); border-radius: 999px; padding: 5px 11px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		.row-right { font-size: 23px; line-height: 1.25; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
 	</style>
+	{% if render_theme and render_theme.enabled %}
+	<style>{{ render_theme.css | safe }}</style>
+	{% endif %}
 </head>
-<body>
+<body{% if render_theme and render_theme.enabled %} class="wf-custom-background"{% endif %}>
 	{#
 		模板: subscription.html（订阅类指令共享）
 		适用指令: /订阅 /退订 /订阅列表

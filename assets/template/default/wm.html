@@ -81,8 +81,11 @@
     .price { font-size: 32px; line-height: 1.1; font-weight: 780; color: #2563eb; }
     .qty { margin-top: 4px; font-size: 18px; color: #64748b; min-height: 22px; }
   </style>
+  {% if render_theme and render_theme.enabled %}
+  <style>{{ render_theme.css | safe }}</style>
+  {% endif %}
 </head>
-<body>
+<body{% if render_theme and render_theme.enabled %} class="wf-custom-background"{% endif %}>
     {#
     模板: wm.html（指令 /wm）
     渲染器: renderers/wm_render.py
