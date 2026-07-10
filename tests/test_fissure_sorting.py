@@ -12,7 +12,10 @@ _services_package = types.ModuleType(_SERVICES_PACKAGE)
 _services_package.__path__ = [str(Path(__file__).resolve().parents[1] / "services")]
 sys.modules[_SERVICES_PACKAGE] = _services_package
 try:
-    from astrbot_plugin_warframe_helper.services.fissure_sorting import sort_fissures
+    from astrbot_plugin_warframe_helper.services.fissure_sorting import (
+        FissureLike,
+        sort_fissures,
+    )
 finally:
     if _existing_services_package is None:
         sys.modules.pop(_SERVICES_PACKAGE, None)
@@ -24,6 +27,16 @@ finally:
 class _Fissure:
     tier: str
     eta: str
+
+
+def test_fissure_protocol_attributes_are_read_only_properties() -> None:
+    tier_property = FissureLike.__dict__.get("tier")
+    eta_property = FissureLike.__dict__.get("eta")
+
+    assert isinstance(tier_property, property)
+    assert tier_property.fset is None
+    assert isinstance(eta_property, property)
+    assert eta_property.fset is None
 
 
 def test_tier_first_sorts_all_chinese_tiers_in_progression_order() -> None:
@@ -107,6 +120,32 @@ def test_tier_first_keeps_unknown_tiers_after_known_tiers_and_sorts_their_eta() 
         ("后纪", "40分"),
         ("UnknownBeta", "5分"),
         ("未知甲", "20分"),
+    ]
+
+
+def test_tier_first_keeps_input_order_for_identical_sort_keys() -> None:
+    first = _Fissure("古纪", "10分")
+    second = _Fissure("古纪", "10分")
+
+    result = sort_fissures([first, second], tier_first=True)
+
+    assert result[0] is first
+    assert result[1] is second
+
+
+def test_tier_first_treats_empty_and_blank_tiers_as_unknown() -> None:
+    fissures = [
+        _Fissure("", "20分"),
+        _Fissure("古纪", "30分"),
+        _Fissure("   ", "5分"),
+    ]
+
+    result = sort_fissures(fissures, tier_first=True)
+
+    assert [(fissure.tier, fissure.eta) for fissure in result] == [
+        ("古纪", "30分"),
+        ("   ", "5分"),
+        ("", "20分"),
     ]
 
 

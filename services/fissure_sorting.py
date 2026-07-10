@@ -7,8 +7,13 @@ from ..helpers import eta_key_zh
 
 
 class FissureLike(Protocol):
-    tier: str
-    eta: str
+    @property
+    def tier(self) -> str:
+        ...
+
+    @property
+    def eta(self) -> str:
+        ...
 
 
 FissureT = TypeVar("FissureT", bound=FissureLike)
