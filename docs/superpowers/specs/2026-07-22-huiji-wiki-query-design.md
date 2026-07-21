@@ -8,7 +8,7 @@
 
 - `/wk <关键词>` 和无前缀形式 `wk <关键词>` 执行 Wiki 查询。
 - 空关键词返回用法提示：`用法：/wk <关键词>`。
-- `wfmap` 保持现有管理与诊断用途；`wk` 复用同一份简称/外号映射数据完成关键词重定向。
+- `wfmap` 保持现有的市场物品管理与诊断用途；`wk` 只复用它底层的简称/外号映射数据完成关键词重定向，不复用市场商品校验。
 - 精确命中时返回：`以下是“原关键词”的 Wiki 页面：`，下一行附最终词条 URL。
 - 未命中时返回：`没有查到“原关键词”，以下是 Wiki 搜索页：`，下一行附搜索 URL。
 - Wiki 回复使用纯文本，保证 QQ 中的链接可以点击或复制。
@@ -16,7 +16,7 @@
 ## 查询流程
 
 1. 对用户关键词做去首尾空白处理；空内容直接返回用法。
-2. 从 `WarframeTermMapper` 的基础别名与用户别名中解析规范名称。Wiki 查询不依赖物品必须可交易，因此映射层需要提供只解析别名、不要求命中 warframe.market 商品的公开方法。
+2. 从 `WarframeTermMapper` 的基础别名与用户别名中解析规范名称。Wiki 查询不依赖物品必须可交易，因此映射层需要提供只解析别名、不要求命中 warframe.market 商品的公开方法。例如“照相机 -> 奥克绪罗斯/Oxylus”即使无法通过 warframe.market 商品校验，仍可作为 Wiki 查询关键词。
 3. 请求灰机标准 MediaWiki Action API：
 
    `https://warframe.huijiwiki.com/api.php?action=query&prop=info&inprop=url&titles=<关键词>&redirects=1&format=json&formatversion=2`
@@ -37,7 +37,7 @@
 
 - `clients/huiji_wiki_client.py`：封装灰机 API 请求、响应解析、页面 URL 与搜索 URL 生成。网络异常转换为明确的“不可用”结果。
 - `services/wiki_commands.py`：解析命令参数、调用别名重定向与 Wiki 客户端、生成最终纯文本。
-- `mappers/term_mapping.py`：新增公开的别名规范化方法，供 `wfmap` 与 `wk` 共用，不暴露内部字典。
+- `mappers/term_mapping.py`：新增公开的别名规范化方法，返回是否命中别名及规范名称，不触发商品缓存初始化，也不要求规范名称能匹配可交易商品；`wk` 使用该方法，`wfmap` 仍可在其后继续执行现有市场商品校验。
 - `main.py`：注册 `/wk`，从紫卡别名中移除 `wk`，删除旧资料命令注册与实现，更新无前缀路由和帮助卡片。
 - `services/market/wmr.py`、`README.md`：移除将 `wk` 描述为紫卡别名的文案，更新命令说明。
 
@@ -46,6 +46,7 @@
 - 灰机当前可能返回 Cloudflare 挑战页，即使状态码或请求本身可达，也必须先验证 `Content-Type` 与 JSON 结构。
 - API 不可用时仍返回搜索页，因此 `wk` 在网络受限环境中保持可用。
 - 别名未命中不是错误，直接使用用户原关键词查询。
+- 别名命中但目标不是可交易商品也不是错误；这类目标仍可在 Wiki 中存在，不能被 warframe.market 缓存否决。
 - 别名命中但 Wiki 没有对应精确词条时，搜索页使用重定向后的规范关键词，以提高搜索质量；回复中的引号仍展示用户原关键词。
 
 ## 测试
