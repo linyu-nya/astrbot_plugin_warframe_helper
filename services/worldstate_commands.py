@@ -165,6 +165,87 @@ async def cmd_archon_hunt(
     return event.plain_result("\n".join(lines))
 
 
+async def cmd_archimedeas(
+    *,
+    event: AstrMessageEvent,
+    raw_args: str,
+    worldstate_client: WarframeWorldstateClient,
+):
+    tokens = split_tokens(str(raw_args))
+    platform_norm = worldstate_platform_from_tokens(tokens)
+    compact = _normalize_compact(raw_args)
+    desired: str | None = None
+    if any(key in compact for key in ("深层", "火卫二", "lab")):
+        desired = "深层科研"
+    elif any(key in compact for key in ("时光", "1999", "hex")):
+        desired = "时光科研"
+
+    infos = await worldstate_client.fetch_archimedeas(
+        platform=platform_norm, language="zh"
+    )
+    if infos is None:
+        return event.plain_result("未获取到科研信息（可能是网络限制或接口不可达）。")
+    if desired:
+        infos = [info for info in infos if info.kind == desired]
+    if not infos:
+        suffix = f"：{desired}" if desired else ""
+        return event.plain_result(f"当前没有科研信息{suffix}。")
+
+    header_lines = [f"平台：{platform_norm}"]
+    eta_values = list(dict.fromkeys(info.eta for info in infos))
+    if len(eta_values) == 1:
+        header_lines.append(f"重置：{eta_values[0]}")
+
+    rows: list[WorldstateRow] = []
+    reward_rows: list[WorldstateRow] = []
+    for info in infos:
+        for index, mission in enumerate(info.missions, start=1):
+            details = [mission.faction]
+            if mission.deviation:
+                details.append(f"偏差：{mission.deviation}")
+            if mission.risks:
+                details.append(f"风险：{' / '.join(mission.risks)}")
+            rows.append(
+                WorldstateRow(
+                    title=f"{info.kind} {index}. {mission.mission_type}",
+                    subtitle=" | ".join(part for part in details if part),
+                    right=f"剩余{info.eta}",
+                )
+            )
+        modifiers = " / ".join(info.personal_modifiers) or "(未返回)"
+        reward_rows.append(
+            WorldstateRow(title=f"{info.kind}个人限制", subtitle=modifiers)
+        )
+
+    rendered = await render_worldstate_rows_image_to_file(
+        title=desired or "科研",
+        header_lines=header_lines,
+        rows=rows,
+        reward_rows=reward_rows,
+        accent=(14, 165, 233, 255),
+    )
+    if rendered:
+        return event.image_result(rendered.path)
+
+    lines = [f"科研（{platform_norm}）"]
+    for info in infos:
+        lines.append(f"【{info.kind}】剩余{info.eta}")
+        for index, mission in enumerate(info.missions, start=1):
+            details = [mission.faction]
+            if mission.deviation:
+                details.append(f"偏差：{mission.deviation}")
+            if mission.risks:
+                details.append(f"风险：{' / '.join(mission.risks)}")
+            lines.append(
+                f"{index}. {mission.mission_type} | "
+                + " | ".join(part for part in details if part)
+            )
+        lines.append(
+            "个人限制：" + (" / ".join(info.personal_modifiers) or "(未返回)")
+        )
+    return event.plain_result("\n".join(lines))
+
+
 async def cmd_steel_path_reward(
     *,
     event: AstrMessageEvent,

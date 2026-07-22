@@ -23,6 +23,25 @@
     "description": "裂缝按纪元排序",
     "hint": "开启后按古前中后安魂全能排序，同纪元按剩余时间；关闭后仅按剩余时间。"
   },
+  "auto_push": {
+    "type": "object",
+    "description": "世界状态自动推送",
+    "hint": "总开关开启后，AstrBot 管理员可使用 /推送开启 注册当前群。首次启用只建立基线，不补发已有内容；之后推送新事件。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用自动推送服务",
+        "hint": "关闭后停止后台轮询和主动消息，但保留已登记群及去重状态。"
+      },
+      "poll_interval_sec": {
+        "type": "int",
+        "default": 60,
+        "description": "推送轮询间隔（秒）",
+        "hint": "允许范围 30-3600 秒；低于 30 秒会自动按 30 秒处理。"
+      }
+    }
+  },
   "unknown_abbrev_provider_id": {
     "type": "string",
     "default": "",

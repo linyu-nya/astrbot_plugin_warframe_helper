@@ -174,6 +174,19 @@ def test_disabled_overlay_omits_overlay_but_keeps_background():
     assert "background-image: url(" in theme.css
 
 
+def test_custom_background_covers_minimum_snapshot_height():
+    settings = replace(RenderBackgroundConfig(enabled=True))
+
+    theme = build_render_theme_context(
+        settings,
+        _FakeAssets({"default": "data:image/png;base64,abc"}),
+        filename="status_list.html",
+        command_key="钢铁奖励",
+    )
+
+    assert "min-height: 100vh;" in theme.css
+
+
 def test_glass_uses_custom_blur_value():
     settings = replace(
         RenderBackgroundConfig(enabled=True),
