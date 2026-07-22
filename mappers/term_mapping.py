@@ -16,11 +16,13 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from ..http_utils import fetch_json
 from .nickname_registry import (
     NicknameRegistry,
+    SOURCE_BASE,
     SYM_BASE_NICKNAMES,
     SYM_RIVEN_STAT_NICKNAMES,
     SYM_RIVEN_WEAPON_NICKNAMES,
     USER_ALIASES,
     normalize_alias_key,
+    normalize_alias_value,
 )
 
 WARFRAME_MARKET_V2_BASE_URL = "https://api.warframe.market/v2"
@@ -91,6 +93,21 @@ class MarketResolveTrace:
 
 
 @dataclass(frozen=True, slots=True)
+class AliasResolution:
+    original_query: str
+    matched: bool
+    alias_key: str | None
+    canonical_full_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveAliasEntry:
+    alias: str
+    full_name: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedItemQuery:
     raw_query: str
     alias_key: str | None
@@ -148,20 +165,35 @@ class WarframeTermMapper:
         *,
         http_timeout_sec: float = 8.0,
         cache_ttl_sec: float = 30 * 24 * 3600,
+        nickname_registry: NicknameRegistry | None = None,
+        plugin_data_dir: str | Path | None = None,
+        items_cache_path: str | Path | None = None,
     ) -> None:
         self._timeout = aiohttp.ClientTimeout(total=http_timeout_sec)
         self._cache_ttl_sec = cache_ttl_sec
 
-        self._plugin_data_dir = (
-            Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_warframe_helper"
-        )
+        if plugin_data_dir is not None:
+            self._plugin_data_dir = Path(plugin_data_dir)
+        elif nickname_registry is not None:
+            self._plugin_data_dir = nickname_registry.path.parent
+        else:
+            self._plugin_data_dir = (
+                Path(get_astrbot_plugin_data_path())
+                / "astrbot_plugin_warframe_helper"
+            )
         self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
-        self._nickname_registry = NicknameRegistry()
-        self._items_cache_path = self._plugin_data_dir / WARFRAME_MARKET_ITEMS_CACHE_FILE
+        self._nickname_registry = nickname_registry or NicknameRegistry()
+        self._items_cache_path = (
+            Path(items_cache_path)
+            if items_cache_path is not None
+            else self._plugin_data_dir / WARFRAME_MARKET_ITEMS_CACHE_FILE
+        )
 
         self._alias_full_names: dict[str, str] = {}
         self._base_alias_keys: set[str] = set()
+        self._effective_alias_entries: tuple[EffectiveAliasEntry, ...] = ()
+        self._aliases_loaded = False
 
         self._items: list[MarketItem] = []
         self._items_by_slug: dict[str, MarketItem] = {}
@@ -201,7 +233,7 @@ class WarframeTermMapper:
         if self._loaded:
             return
 
-        self.reload_aliases()
+        self._ensure_aliases_loaded()
 
         loaded = self._load_items_cache()
         if not loaded:
@@ -210,28 +242,77 @@ class WarframeTermMapper:
 
     def reload_aliases(self) -> None:
         base_aliases = self._nickname_registry.get_alias_map(SYM_BASE_NICKNAMES)
-        merged_aliases = self._nickname_registry.get_alias_map(
-            SYM_BASE_NICKNAMES,
-            SYM_RIVEN_WEAPON_NICKNAMES,
-            USER_ALIASES,
+        entries = tuple(
+            EffectiveAliasEntry(
+                alias=entry["alias"],
+                full_name=entry["full_name"],
+                source=entry["source"],
+            )
+            for entry in self._nickname_registry.get_effective_alias_entries()
         )
         self._base_alias_keys = set(base_aliases.keys())
-        self._alias_full_names = merged_aliases
+        self._effective_alias_entries = entries
+        self._alias_full_names = {
+            entry.alias: entry.full_name for entry in self._effective_alias_entries
+        }
+        self._aliases_loaded = True
         self._debug_log(
             "reload_aliases",
             base_aliases=len(self._base_alias_keys),
             merged_aliases=len(self._alias_full_names),
         )
 
-    def upsert_alias(self, *, alias: str, full_name: str) -> tuple[str, str]:
-        key, value = self._nickname_registry.upsert_default_alias(
+    def _ensure_aliases_loaded(self) -> None:
+        if not self._aliases_loaded:
+            self.reload_aliases()
+
+    def resolve_alias_only(self, query: str) -> AliasResolution:
+        original_query = str(query or "")
+        alias_key, canonical_full_name, _ = self._resolve_alias(original_query)
+        if alias_key is None:
+            return AliasResolution(
+                original_query=original_query,
+                matched=False,
+                alias_key=None,
+                canonical_full_name=original_query,
+            )
+        return AliasResolution(
+            original_query=original_query,
+            matched=True,
+            alias_key=alias_key,
+            canonical_full_name=canonical_full_name,
+        )
+
+    def upsert_user_alias(self, *, alias: str, full_name: str) -> tuple[str, str]:
+        key, value = self._nickname_registry.upsert_alias(
             alias=alias,
             full_name=full_name,
-            section=SYM_BASE_NICKNAMES,
-            sync_to_data=True,
+            section=USER_ALIASES,
         )
         self.reload_aliases()
         return key, value
+
+    def upsert_alias(self, *, alias: str, full_name: str) -> tuple[str, str]:
+        return self.upsert_user_alias(alias=alias, full_name=full_name)
+
+    def delete_user_alias(self, alias: str) -> str:
+        result = self._nickname_registry.delete_user_alias(alias)
+        self.reload_aliases()
+        return result
+
+    def find_effective_aliases(self, full_name: str) -> list[EffectiveAliasEntry]:
+        self._ensure_aliases_loaded()
+        if normalize_alias_key(full_name) in self._alias_full_names:
+            return []
+
+        target = normalize_alias_value(full_name).casefold()
+        if not target:
+            return []
+        return [
+            entry
+            for entry in self._effective_alias_entries
+            if normalize_alias_value(entry.full_name).casefold() == target
+        ]
 
     async def refresh_nickname_table_from_url(self, url: str) -> dict[str, Any]:
         result = await self._nickname_registry.refresh_default_from_url(url=url)
@@ -427,6 +508,7 @@ class WarframeTermMapper:
         return len(items)
 
     def _resolve_alias(self, query: str) -> tuple[str | None, str, str]:
+        self._ensure_aliases_loaded()
         q_norm = normalize_alias_key(query)
         if not q_norm:
             return None, "", ""
