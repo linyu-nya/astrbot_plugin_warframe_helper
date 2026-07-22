@@ -296,6 +296,178 @@ def _parse_any_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _extract_object_id(row: Any) -> str | None:
+    if not isinstance(row, dict):
+        return None
+    for key in ("id", "_id"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            oid = value.get("$oid") or value.get("oid")
+            if isinstance(oid, str) and oid.strip():
+                return oid.strip()
+    return None
+
+
+def _humanize_identifier(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "?"
+    raw = raw.replace("_", " ").replace("-", " ")
+    raw = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _archimedea_modifier_lookup_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+# Chinese names follow the deviation/risk tables on Huiji Wiki's Research page.
+# Both display names and known world-state keys are accepted because official and
+# WarframeStat payloads expose different representations of the same modifier.
+_ARCHIMEDEA_MODIFIER_ZH: dict[str, str] = {
+    # Deep Archimedea deviations.
+    "necramechinflux": "殁世机甲激增",
+    "fissurecascade": "裂缝激增",
+    "damagelink": "伤害链接",
+    "sealedarmor": "密闭装甲",
+    "parasitictowers": "寄生装置塔",
+    "hostilesupport": "敌意支援",
+    "hazardousareas": "危险区域",
+    "highriskmaterials": "高危物资",
+    "alchemicalinvulnerability": "炼金难侵",
+    "eximusamphora": "卓越者元素瓶",
+    "erodingsenses": "侵蚀感官",
+    "glyphinflation": "浮印膨胀",
+    "glyphtrap": "浮印陷阱",
+    "radioactivebreakdown": "辐化御敌",
+    "barbedglyphs": "带刺钥符",
+    "coordinatedfront": "协调阵线",
+    "relentlesstide": "无情肢潮",
+    "angeliccohort": "天使同行",
+    "thefragmentedtwo": "双重接肢",
+    "engorgedgruzzlings": "暴食贪囤",
+    "stickyfingers": "暴食贪囤",
+    "unifiedpurpose": "统一目标",
+    "doubledemolishers": "双重爆破",
+    # Shared and Deep Archimedea risk variables.
+    "hostileregeneration": "敌军再生",
+    "regeneratingenemies": "敌军再生",
+    "vampyricliminus": "吸血界影",
+    "adaptiveaberrations": "适应异变",
+    "bolsteredbelligerents": "强化好战",
+    "shieldedfoes": "强化好战",
+    "rangedengagements": "远程交战",
+    "closequarters": "短兵相接",
+    "fortifiedfoes": "坚不可摧",
+    "deflectors": "坚不可摧",
+    "myopicmunitions": "短视弹药",
+    "pointblank": "短视弹药",
+    "postmortalsurges": "死后冲击",
+    "voidburst": "死后冲击",
+    "elementalpotency": "元素效力",
+    "eximusreinforcements": "卓越支援",
+    "boldventure": "激进冒险",
+    "devilsbargain": "恶魔契约",
+    "entanglement": "牵连",
+    "commandingculverins": "指挥型重型炮兵",
+    "antimaterialweapons": "指挥型重型炮兵",
+    "explosivepotential": "易爆潜能",
+    "explosivecrawlers": "易爆潜能",
+    "alluringarcocanids": "迷人弧犬",
+    "empblackhole": "迷人弧犬",
+    # Temporal Archimedea deviations and risk variables.
+    "mitosis": "有丝分裂",
+    "growthhormones": "阿尔法传承种",
+    "highscalinglegacyte": "阿尔法传承种",
+    "parallelevolution": "平行进化",
+    "toxictank": "毒性坦克",
+    "thermianplating": "装甲护板",
+    "tankstrongarmor": "装甲护板",
+    "noisesuppression": "噪音抑制",
+    "miasmitemash": "爆发能量",
+    "explosiveenergy": "爆发能量",
+    "vamprock": "破坏之音",
+    "balloonfest": "气球嘉年华",
+    "lightcannonbeacon": "光能炮信标",
+    "corruptedflesh": "腐朽之躯",
+    "infectedtechrot": "腐朽之躯",
+    "competitiveedge": "竞争优势",
+    "miasmiteswarm": "自爆虫群",
+    "densefog": "浓雾",
+    "itsalive": "它是活的",
+    "hostileovergrowth": "它是活的",
+    "techrotspeedrun": "科腐者竞速",
+    "factionswarmtechrot": "科腐者竞速",
+    "scaldraspeedrun": "炽蛇军竞速",
+    "factionswarmscaldra": "炽蛇军竞速",
+    "heavycombat": "重装作战",
+    "autoarcade": "自动街机",
+    "beyondthewall": "墙壁之外",
+}
+
+
+_ARCHIMEDEA_DEVIATION_ZH: dict[str, str] = {
+    # These official keys collide with English risk-variable display names.
+    "fortifiedfoes": "密闭装甲",
+}
+
+
+_ARCHIMEDEA_RISK_ZH: dict[str, str] = {
+    "fortifiedfoes": "坚不可摧",
+    "reinforcements": "卓越支援",
+}
+
+
+_ARCHIMEDEA_CONTEXTUAL_ZH: dict[tuple[str, str, str], str] = {
+    ("CT_LAB", "deviation", "reinforcements"): "协调阵线",
+    ("CT_HEX", "deviation", "reinforcements"): "敌军增援",
+}
+
+
+def _localize_archimedea_modifier(
+    value: Any,
+    *,
+    language: str,
+    modifier_type: Literal["deviation", "risk"],
+    kind_code: str,
+) -> str:
+    candidates: list[Any]
+    if isinstance(value, dict):
+        candidates = [value.get("key"), value.get("name")]
+    else:
+        candidates = [value]
+
+    if (language or "").strip().lower().startswith("zh"):
+        typed_map = (
+            _ARCHIMEDEA_DEVIATION_ZH
+            if modifier_type == "deviation"
+            else _ARCHIMEDEA_RISK_ZH
+        )
+        for candidate in candidates:
+            lookup_key = _archimedea_modifier_lookup_key(candidate)
+            translated = (
+                _ARCHIMEDEA_CONTEXTUAL_ZH.get(
+                    (kind_code, modifier_type, lookup_key)
+                )
+                or typed_map.get(lookup_key)
+                or _ARCHIMEDEA_MODIFIER_ZH.get(lookup_key)
+            )
+            if translated:
+                return translated
+
+    fallback = next(
+        (
+            candidate
+            for candidate in reversed(candidates)
+            if isinstance(candidate, str) and candidate.strip()
+        ),
+        None,
+    )
+    return _humanize_identifier(fallback)
+
+
 _NIGHTWAVE_DT_MAP: dict[str, str] = {
     "IMPACT": "冲击",
     "PUNCTURE": "穿刺",
@@ -541,6 +713,8 @@ class AlertInfo:
     min_level: int | None
     max_level: int | None
     eta: str
+    event_id: str | None = None
+    expiry_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,6 +726,8 @@ class FissureInfo:
     is_storm: bool
     is_hard: bool
     eta: str
+    event_id: str | None = None
+    expiry_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,6 +743,9 @@ class SortieInfo:
     faction: str | None
     eta: str
     stages: tuple[SortieStage, ...]
+    event_id: str | None = None
+    activation_utc: datetime | None = None
+    expiry_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +761,27 @@ class ArchonHuntInfo:
     faction: str | None
     eta: str
     stages: tuple[ArchonHuntStage, ...]
+    event_id: str | None = None
+    activation_utc: datetime | None = None
+    expiry_utc: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchimedeaMission:
+    faction: str | None
+    mission_type: str
+    deviation: str | None
+    risks: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchimedeaInfo:
+    event_id: str
+    kind: str
+    eta: str
+    expiry_utc: datetime | None
+    missions: tuple[ArchimedeaMission, ...]
+    personal_modifiers: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,6 +817,28 @@ class VoidTraderInfo:
     location: str | None
     eta: str
     inventory: tuple[VoidTraderItem, ...]
+    event_id: str | None = None
+    activation_utc: datetime | None = None
+    expiry_utc: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorldEventInfo:
+    event_id: str
+    title: str
+    node: str | None
+    reward: str | None
+    eta: str
+    expiry_utc: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NewsInfo:
+    event_id: str
+    message: str
+    link: str | None
+    date_utc: datetime | None = None
+    is_update: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1280,7 +1502,9 @@ class WarframeWorldstateClient:
             "MT_SPY": "间谍",
             "MT_EXCAVATE": "挖掘",
             "MT_DISRUPTION": "中断",
+            "MT_ARTIFACT": "中断",
             "MT_ALCHEMY": "炼金",
+            "MT_ENDLESS_CAPTURE": "传承收割",
             "MT_VOID_CASCADE": "虚空瀑流",
             "MT_CORRUPTION": "腐化",
         }
@@ -1300,6 +1524,7 @@ class WarframeWorldstateClient:
             "spy": "间谍",
             "excavation": "挖掘",
             "disruption": "中断",
+            "legacyte harvest": "传承收割",
             "alchemy": "炼金",
             "void cascade": "虚空瀑流",
             "void flood": "虚空洪流",
@@ -1368,11 +1593,21 @@ class WarframeWorldstateClient:
             "FC_OROKIN": "Orokin",
             "FC_CORRUPTED": "Corrupted",
             "FC_MURMUR": "Murmur",
+            "FC_MITW": "墙中人",
+            "FC_SCALDRA": "炽蛇军",
+            "FC_TECHROT": "科腐者",
             "FC_SENTIENT": "Sentient",
             "FC_TENNO": "Tenno",
         }
         if raw in mapping:
             return mapping[raw]
+        display_names = {
+            "man in the wall": "墙中人",
+            "scaldra": "炽蛇军",
+            "techrot": "科腐者",
+        }
+        if raw.casefold() in display_names:
+            return display_names[raw.casefold()]
         if raw.startswith("FC_"):
             return raw.removeprefix("FC_").replace("_", " ").title()
         return raw
@@ -1484,6 +1719,8 @@ class WarframeWorldstateClient:
                     min_level=min_level,
                     max_level=max_level,
                     eta=_format_eta_from_dt(expiry),
+                    event_id=_extract_object_id(row),
+                    expiry_utc=expiry,
                 )
             )
         return out
@@ -1532,6 +1769,8 @@ class WarframeWorldstateClient:
                         is_storm=is_storm,
                         is_hard=is_hard,
                         eta=_format_eta_from_dt(expiry),
+                        event_id=_extract_object_id(row),
+                        expiry_utc=expiry,
                     )
                 )
 
@@ -1560,6 +1799,8 @@ class WarframeWorldstateClient:
                         is_storm=True,
                         is_hard=False,
                         eta=_format_eta_from_dt(expiry),
+                        event_id=_extract_object_id(row),
+                        expiry_utc=expiry,
                     )
                 )
 
@@ -1595,6 +1836,7 @@ class WarframeWorldstateClient:
             if isinstance(so.get("faction"), str)
             else None
         )
+        activation = _parse_any_datetime(so.get("Activation") or so.get("activation"))
         expiry = _parse_any_datetime(so.get("Expiry") or so.get("expiry"))
 
         variants = so.get("Variants")
@@ -1628,6 +1870,9 @@ class WarframeWorldstateClient:
             faction=faction,
             eta=_format_eta_from_dt(expiry),
             stages=tuple(stages),
+            event_id=_extract_object_id(so),
+            activation_utc=activation,
+            expiry_utc=expiry,
         )
 
     async def fetch_archon_hunt(
@@ -1639,20 +1884,45 @@ class WarframeWorldstateClient:
 
         ah = ws.get("ArchonHunt")
         if not isinstance(ah, dict):
+            ah = ws.get("archonHunt")
+        if not isinstance(ah, dict):
+            lite_sorties = ws.get("LiteSorties")
+            if isinstance(lite_sorties, list) and lite_sorties:
+                candidate = lite_sorties[0]
+                if isinstance(candidate, dict):
+                    ah = candidate
+        if not isinstance(ah, dict):
             return None
 
-        expiry = _parse_ws_date(ah.get("Expiry"))
+        activation = _parse_any_datetime(ah.get("Activation") or ah.get("activation"))
+        expiry = _parse_any_datetime(ah.get("Expiry") or ah.get("expiry"))
 
-        boss_raw = ah.get("Boss") if isinstance(ah.get("Boss"), str) else None
+        boss_raw = (
+            ah.get("Boss")
+            if isinstance(ah.get("Boss"), str)
+            else ah.get("boss")
+            if isinstance(ah.get("boss"), str)
+            else None
+        )
         boss = (
-            boss_raw.replace("ArchonHuntBoss_", "").replace("ARCHON_HUNT_BOSS_", "")
+            boss_raw.replace("ArchonHuntBoss_", "")
+            .replace("ARCHON_HUNT_BOSS_", "")
+            .replace("SORTIE_BOSS_", "")
             if boss_raw
             else None
         )
-        faction = ah.get("Faction") if isinstance(ah.get("Faction"), str) else None
+        faction = (
+            ah.get("Faction")
+            if isinstance(ah.get("Faction"), str)
+            else ah.get("faction")
+            if isinstance(ah.get("faction"), str)
+            else "Narmer"
+        )
 
         stages: list[ArchonHuntStage] = []
         missions = ah.get("Missions")
+        if not isinstance(missions, list):
+            missions = ah.get("missions")
         if isinstance(missions, list):
             for m in missions:
                 if not isinstance(m, dict):
@@ -1680,7 +1950,160 @@ class WarframeWorldstateClient:
             faction=faction,
             eta=_format_eta_from_dt(expiry),
             stages=tuple(stages),
+            event_id=_extract_object_id(ah),
+            activation_utc=activation,
+            expiry_utc=expiry,
         )
+
+    async def fetch_archimedeas(
+        self, *, platform: Platform = "pc", language: str = "zh"
+    ) -> list[ArchimedeaInfo] | None:
+        ws = await self._get_worldstate(platform=platform, language=language)
+        if not isinstance(ws, dict):
+            return None
+
+        rows = ws.get("Conquests")
+        normalized = False
+        if not isinstance(rows, list):
+            rows = ws.get("archimedeas")
+            normalized = True
+        if not isinstance(rows, list):
+            return []
+
+        out: list[ArchimedeaInfo] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            kind_raw = row.get("Type") or row.get("typeKey") or row.get("type") or ""
+            # WarframeStat currently formats these enum values as
+            # "C T_ L A B" / "C T_ H E X" in localized aggregates.
+            kind_code = re.sub(r"\s+", "", str(kind_raw)).strip()
+            kind = {
+                "CT_LAB": "深层科研",
+                "CT_HEX": "时光科研",
+            }.get(kind_code, _humanize_identifier(kind_code))
+            activation = _parse_any_datetime(
+                row.get("Activation") or row.get("activation")
+            )
+            expiry = _parse_any_datetime(row.get("Expiry") or row.get("expiry"))
+            seed = row.get("RandomSeed") or row.get("randomSeed")
+            activation_sec = int(activation.timestamp()) if activation else 0
+            event_id = f"{kind_code}:{activation_sec}"
+            if seed is not None:
+                event_id = f"{event_id}:{seed}"
+
+            mission_rows = row.get("Missions") or row.get("missions")
+            missions: list[ArchimedeaMission] = []
+            if isinstance(mission_rows, list):
+                for mission in mission_rows:
+                    if not isinstance(mission, dict):
+                        continue
+                    faction_raw = mission.get("faction") or mission.get("Faction")
+                    faction = self._faction_name_cn(
+                        faction_raw if isinstance(faction_raw, str) else None
+                    )
+                    if not faction and isinstance(faction_raw, str):
+                        faction = _humanize_identifier(faction_raw)
+                    mission_raw = mission.get("missionType") or mission.get(
+                        "MissionType"
+                    )
+                    mission_type = await self._mission_type_name(
+                        mission_raw if isinstance(mission_raw, str) else "",
+                        language=language,
+                    )
+
+                    deviation: str | None = None
+                    risks: list[str] = []
+                    if normalized:
+                        deviation_raw = mission.get("deviation")
+                        if isinstance(deviation_raw, (dict, str)):
+                            deviation = _localize_archimedea_modifier(
+                                deviation_raw,
+                                language=language,
+                                modifier_type="deviation",
+                                kind_code=kind_code,
+                            )
+                        risk_rows = mission.get("risks")
+                        if isinstance(risk_rows, list):
+                            for risk in risk_rows:
+                                if isinstance(risk, (dict, str)):
+                                    risks.append(
+                                        _localize_archimedea_modifier(
+                                            risk,
+                                            language=language,
+                                            modifier_type="risk",
+                                            kind_code=kind_code,
+                                        )
+                                    )
+                    else:
+                        difficulties = mission.get("difficulties")
+                        picked: dict[str, Any] | None = None
+                        if isinstance(difficulties, list):
+                            candidates = [
+                                d for d in difficulties if isinstance(d, dict)
+                            ]
+                            picked = next(
+                                (
+                                    d
+                                    for d in candidates
+                                    if str(d.get("type") or "") == "CD_HARD"
+                                ),
+                                candidates[-1] if candidates else None,
+                            )
+                        if picked:
+                            deviation_raw = picked.get("deviation")
+                            if isinstance(deviation_raw, str):
+                                deviation = _localize_archimedea_modifier(
+                                    deviation_raw,
+                                    language=language,
+                                    modifier_type="deviation",
+                                    kind_code=kind_code,
+                                )
+                            risk_rows = picked.get("risks")
+                            if isinstance(risk_rows, list):
+                                risks = [
+                                    _localize_archimedea_modifier(
+                                        risk,
+                                        language=language,
+                                        modifier_type="risk",
+                                        kind_code=kind_code,
+                                    )
+                                    for risk in risk_rows
+                                    if isinstance(risk, str)
+                                ]
+
+                    missions.append(
+                        ArchimedeaMission(
+                            faction=faction,
+                            mission_type=mission_type,
+                            deviation=deviation,
+                            risks=tuple(risks),
+                        )
+                    )
+
+            modifier_rows = row.get("Variables") or row.get("personalModifiers")
+            modifiers: list[str] = []
+            if isinstance(modifier_rows, list):
+                for modifier in modifier_rows:
+                    modifier_raw = (
+                        modifier.get("name") or modifier.get("key")
+                        if isinstance(modifier, dict)
+                        else modifier
+                    )
+                    if isinstance(modifier_raw, str):
+                        modifiers.append(_humanize_identifier(modifier_raw))
+
+            out.append(
+                ArchimedeaInfo(
+                    event_id=event_id,
+                    kind=kind,
+                    eta=_format_eta_from_dt(expiry),
+                    expiry_utc=expiry,
+                    missions=tuple(missions),
+                    personal_modifiers=tuple(modifiers),
+                )
+            )
+        return out
 
     async def fetch_steel_path_reward(
         self, *, platform: Platform = "pc", language: str = "zh"
@@ -1696,11 +2119,24 @@ class WarframeWorldstateClient:
 
         sp = ws.get("SteelPath")
         if not isinstance(sp, dict):
+            sp = ws.get("steelPath")
+        if not isinstance(sp, dict):
+            lang = (language or "zh").strip().lower() or "zh"
+            data = await self._fetch_json_resilient(
+                [
+                    f"{url}?language={lang}"
+                    for url in self._warframestat_urls(platform, "steelPath")
+                ]
+            )
+            if isinstance(data, dict):
+                nested = data.get("SteelPath") or data.get("steelPath")
+                sp = nested if isinstance(nested, dict) else data
+        if not isinstance(sp, dict):
             return None
 
         # Try multiple known shapes.
         reward_name: str | None = None
-        reward_raw = sp.get("CurrentReward")
+        reward_raw = sp.get("CurrentReward") or sp.get("currentReward")
         if isinstance(reward_raw, str):
             reward_name = reward_raw
         elif isinstance(reward_raw, dict):
@@ -1711,15 +2147,16 @@ class WarframeWorldstateClient:
                     reward_name = v.strip()
                     break
 
-        # Translate uniqueName if possible.
-        if reward_name and reward_name.startswith("/"):
-            translated = await self._item_name(reward_name, language=language)
+        if reward_name:
+            translated = await self.localize_item_display_name(
+                reward_name, language=language
+            )
             reward_name = translated or reward_name
 
         expiry = (
-            _parse_ws_date(sp.get("Expiry"))
-            or _parse_ws_date(sp.get("expiry"))
-            or _parse_ws_date(sp.get("EndDate"))
+            _parse_any_datetime(sp.get("Expiry"))
+            or _parse_any_datetime(sp.get("expiry"))
+            or _parse_any_datetime(sp.get("EndDate"))
         )
 
         return SteelPathRewardInfo(reward=reward_name, eta=_format_eta_from_dt(expiry))
@@ -1960,7 +2397,133 @@ class WarframeWorldstateClient:
             location=location,
             eta=_format_eta_from_dt(eta_dt),
             inventory=tuple(inv),
+            event_id=_extract_object_id(vt),
+            activation_utc=activation,
+            expiry_utc=expiry,
         )
+
+    async def fetch_news(
+        self, *, platform: Platform = "pc", language: str = "zh"
+    ) -> list[NewsInfo] | None:
+        lang = (language or "zh").strip().lower() or "zh"
+        data = await self._fetch_json_resilient(
+            [f"{url}?language={lang}" for url in self._warframestat_urls(platform, "news")]
+        )
+        rows = data if isinstance(data, list) else None
+        if rows is None:
+            ws = await self._get_worldstate(platform=platform, language=language)
+            if not isinstance(ws, dict):
+                return None
+            raw_rows = ws.get("Events")
+            rows = raw_rows if isinstance(raw_rows, list) else []
+
+        out: list[NewsInfo] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            event_id = _extract_object_id(row)
+            if not event_id:
+                continue
+            message = row.get("message")
+            if not isinstance(message, str) or not message.strip():
+                messages = row.get("Messages")
+                if isinstance(messages, list):
+                    selected: str | None = None
+                    for code in ("zh", "en"):
+                        selected = next(
+                            (
+                                str(item.get("Message") or "").strip()
+                                for item in messages
+                                if isinstance(item, dict)
+                                and str(item.get("LanguageCode") or "").lower() == code
+                                and str(item.get("Message") or "").strip()
+                            ),
+                            None,
+                        )
+                        if selected:
+                            break
+                    message = selected
+            if not isinstance(message, str) or not message.strip():
+                continue
+            link = row.get("link") or row.get("Prop")
+            out.append(
+                NewsInfo(
+                    event_id=event_id,
+                    message=message.strip(),
+                    link=link.strip() if isinstance(link, str) and link.strip() else None,
+                    date_utc=_parse_any_datetime(row.get("date") or row.get("Date")),
+                    is_update=bool(row.get("update")),
+                )
+            )
+        return out
+
+    async def fetch_world_events(
+        self, *, platform: Platform = "pc", language: str = "zh"
+    ) -> list[WorldEventInfo] | None:
+        lang = (language or "zh").strip().lower() or "zh"
+        data = await self._fetch_json_resilient(
+            [
+                f"{url}?language={lang}"
+                for url in self._warframestat_urls(platform, "events")
+            ]
+        )
+        rows = data if isinstance(data, list) else None
+        if rows is None:
+            ws = await self._get_worldstate(platform=platform, language=language)
+            if not isinstance(ws, dict):
+                return None
+            raw_rows = ws.get("Goals")
+            rows = raw_rows if isinstance(raw_rows, list) else []
+
+        out: list[WorldEventInfo] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            event_id = _extract_object_id(row)
+            if not event_id:
+                continue
+            title_raw = row.get("description") or row.get("Desc") or row.get("tag")
+            title = str(title_raw or "特殊活动").strip() or "特殊活动"
+            node_raw = row.get("node") or row.get("Node")
+            node = None
+            if isinstance(node_raw, str) and node_raw.strip():
+                node = await self._node_name(node_raw, language=language)
+            expiry = _parse_any_datetime(row.get("expiry") or row.get("Expiry"))
+
+            reward_parts: list[str] = []
+            reward_rows = row.get("rewards")
+            if isinstance(reward_rows, list):
+                for reward_row in reward_rows:
+                    if not isinstance(reward_row, dict):
+                        continue
+                    items = reward_row.get("items")
+                    if isinstance(items, list):
+                        reward_parts.extend(
+                            str(item).strip()
+                            for item in items
+                            if isinstance(item, str) and item.strip()
+                        )
+            reward = row.get("Reward")
+            if isinstance(reward, dict):
+                items = reward.get("items")
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, str):
+                            continue
+                        reward_parts.append(
+                            (await self._item_name(item, language=language)) or item
+                        )
+            out.append(
+                WorldEventInfo(
+                    event_id=event_id,
+                    title=title,
+                    node=node,
+                    reward=" + ".join(dict.fromkeys(reward_parts)) or None,
+                    eta=_format_eta_from_dt(expiry),
+                    expiry_utc=expiry,
+                )
+            )
+        return out
 
     async def _fetch_arbitration_from_schedule_text(
         self, *, language: str
@@ -2694,7 +3257,14 @@ class WarframeWorldstateClient:
         normal: list[str] = []
         steel: list[str] = []
 
-        rows = ws.get("EndlessXpChoices")
+        schedule = ws.get("EndlessXpSchedule")
+        expiry: datetime | None = None
+        rows: Any = None
+        if isinstance(schedule, dict):
+            rows = schedule.get("CategoryChoices")
+            expiry = _parse_any_datetime(schedule.get("Expiry") or schedule.get("expiry"))
+        if not isinstance(rows, list):
+            rows = ws.get("EndlessXpChoices")
         if isinstance(rows, list):
             for row in rows:
                 if not isinstance(row, dict):
@@ -2715,10 +3285,10 @@ class WarframeWorldstateClient:
                 elif cat == "EXC_HARD":
                     steel = picked
 
-        # Next Monday 00:00 UTC
-        day_start = server_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        monday_start = day_start - timedelta(days=int(server_dt.weekday()))
-        next_reset = monday_start + timedelta(days=7)
+        if expiry is None:
+            day_start = server_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            monday_start = day_start - timedelta(days=int(server_dt.weekday()))
+            expiry = monday_start + timedelta(days=7)
 
         lang = (language or "zh").strip().lower() or "zh"
         if lang.startswith("zh"):
@@ -2738,6 +3308,6 @@ class WarframeWorldstateClient:
         return DuviriCircuitRewardInfo(
             normal_choices=tuple(normal),
             steel_choices=tuple(steel),
-            eta=_format_eta_from_dt(next_reset),
-            expiry_utc=next_reset,
+            eta=_format_eta_from_dt(expiry),
+            expiry_utc=expiry,
         )

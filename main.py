@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-from .clients.drop_data_client import DropDataClient
+from .clients.huiji_wiki_client import HuijiWikiClient
 from .clients.market_client import WarframeMarketClient
 from .clients.public_export_client import PublicExportClient
 from .clients.worldstate_client import WarframeWorldstateClient
@@ -42,12 +42,18 @@ from .renderers.worldstate_render import (
     WorldstateRow,
     render_worldstate_rows_image_to_file,
 )
-from .services import drop_data_commands, public_export_commands, worldstate_commands
+from .services import mapping_commands, wiki_commands, worldstate_commands
+from .services.auto_push import AutoPushService
 from .services.fissure_sorting import fissure_tier_sort_enabled
 from .services.market.pager import cmd_wfp
 from .services.market.wm import cmd_wm
 from .services.market.wmr import cmd_wmr
+from .services.no_prefix_routing import (
+    has_explicit_at_component,
+    no_prefix_skip_reason,
+)
 from .services.subscriptions import SubscriptionService
+from .utils.platforms import worldstate_platform_from_tokens
 
 QQ_OFFICIAL_WEBHOOK_PAGER_TEMPLATE_ID_DEFAULT = ""
 _DEBUG_LOGGING_ENABLED = False
@@ -415,7 +421,7 @@ class WarframeHelperPlugin(Star):
             warframestat_proxy_bases=ws_proxy_bases,
         )
         self.public_export_client = PublicExportClient()
-        self.drop_data_client = DropDataClient()
+        self.huiji_wiki_client = HuijiWikiClient()
 
         # 最近一次 /wm 的 TopN 结果缓存（用于“回复图片发数字”快速生成 /w 话术）
         self._wm_pick_cache = EventScopedTTLCache(ttl_sec=8 * 60)
@@ -463,6 +469,11 @@ class WarframeHelperPlugin(Star):
             worldstate_client=self.worldstate_client,
             config=self.config,
         )
+        self._auto_push = AutoPushService(
+            context=self.context,
+            worldstate_client=self.worldstate_client,
+            config=self.config,
+        )
 
     def _resolve_session_template(self, event: AstrMessageEvent) -> str | None:
         sid = str(getattr(event, "session_id", "") or "").strip()
@@ -481,6 +492,7 @@ class WarframeHelperPlugin(Star):
 
         # Start subscription polling loop after the event loop is ready.
         self._subscriptions.start()
+        self._auto_push.start()
 
     async def _warmup_public_export(self, *, reason: str) -> dict[str, Any]:
         try:
@@ -506,6 +518,7 @@ class WarframeHelperPlugin(Star):
 
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        await self._auto_push.stop()
         await self._subscriptions.stop()
         set_render_theme_resolver(None)
 
@@ -624,26 +637,34 @@ class WarframeHelperPlugin(Star):
             await self._cleanup_result_image_file(result)
 
     def _no_prefix_handler_map(self) -> dict[str, Callable[..., Any] | None]:
+        """No-prefix routes include "wfmap": self.wfmap and "wk": self.wk."""
         return {
             "wf": self.wf_help_cmd,
             "wf帮助": self.wf_help_alias,
             "wfmap": self.wfmap,
-            "wf映射": self.wfmap,
+            "wfmapdel": self.wfmapdel,
+            "wfmapq": self.wfmapq,
+            "wk": self.wk,
             "模板": self.wf_template,
             "wf模板": self.wf_template,
             "渲染模板": self.wf_template,
             "wm": self.wm,
             "wmr": self.wmr,
             "wr": self.wmr,
-            "wk": self.wmr,
             "wfp": self.wf_page,
             "订阅": self.wf_subscribe,
             "退订": self.wf_unsubscribe,
             "取消订阅": self.wf_unsubscribe,
             "订阅列表": self.wf_subscribe_list,
+            "推送开启": self.wf_auto_push_enable,
+            "推送关闭": self.wf_auto_push_disable,
+            "推送状态": self.wf_auto_push_status,
             "执行官猎杀": self.wf_archon_hunt,
             "archon": self.wf_archon_hunt,
             "执行官": self.wf_archon_hunt,
+            "科研": self.wf_archimedeas,
+            "深层科研": self.wf_archimedeas,
+            "时光科研": self.wf_archimedeas,
             "钢铁奖励": self.wf_steel_reward,
             "steelreward": self.wf_steel_reward,
             "sp奖励": self.wf_steel_reward,
@@ -696,22 +717,6 @@ class WarframeHelperPlugin(Star):
             "双衍轮回": self.wf_duviri_circuit_rewards,
             "双衍轮回奖励": self.wf_duviri_circuit_rewards,
             "circuit": self.wf_duviri_circuit_rewards,
-            "武器": self.wf_weapon,
-            "weapon": self.wf_weapon,
-            "wfweapon": self.wf_weapon,
-            "战甲": self.wf_warframe,
-            "warframe": self.wf_warframe,
-            "frame": self.wf_warframe,
-            "wfwarframe": self.wf_warframe,
-            "mod": self.wf_mod,
-            "mods": self.wf_mod,
-            "模组": self.wf_mod,
-            "掉落": self.wf_drops,
-            "drop": self.wf_drops,
-            "drops": self.wf_drops,
-            "遗物": self.wf_relic,
-            "relic": self.wf_relic,
-            "relics": self.wf_relic,
             "入侵": self.wf_invasions,
             "invasions": self.wf_invasions,
             "集团": self.wf_syndicates,
@@ -763,17 +768,20 @@ class WarframeHelperPlugin(Star):
             self._debug_log("no_prefix_skip", event=event, reason="feature_disabled")
             return
 
-        # Messages that already entered wake/command flow (e.g. "/指令", @bot)
-        # are handled by regular command filters and must not be dispatched again.
-        if getattr(event, "is_at_or_wake_command", False):
-            self._debug_log(
-                "no_prefix_skip", event=event, reason="wake_or_command_flow"
-            )
-            return
-
         text = (event.get_message_str() or "").strip()
-        if not text or text.startswith("/"):
-            self._debug_log("no_prefix_skip", event=event, reason="empty_or_slash")
+        try:
+            components = event.get_messages() or []
+        except Exception:
+            components = []
+        skip_reason = no_prefix_skip_reason(
+            text,
+            wake_or_command=bool(
+                getattr(event, "is_at_or_wake_command", False)
+            ),
+            has_explicit_at=has_explicit_at_component(components),
+        )
+        if skip_reason:
+            self._debug_log("no_prefix_skip", event=event, reason=skip_reason)
             return
 
         lowered = text.lower()
@@ -788,6 +796,11 @@ class WarframeHelperPlugin(Star):
         if not command:
             self._debug_log("no_prefix_miss", event=event, command="")
             return
+
+        if command == "深层科研":
+            raw_args = f"深层 {raw_args}".strip()
+        elif command == "时光科研":
+            raw_args = f"时光 {raw_args}".strip()
 
         handler = self._no_prefix_handler_map().get(command)
         if handler is None:
@@ -865,6 +878,65 @@ class WarframeHelperPlugin(Star):
                     return
             yield event.plain_result(msg)
             return
+
+    @filter.command("推送开启")
+    async def wf_auto_push_enable(
+        self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
+    ):
+        """在当前群启用世界状态自动推送。"""
+
+        _safe_disable_llm(event, reason="/推送开启")
+        if event.is_private_chat():
+            yield event.plain_result("自动推送只能在群聊中启用。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("/推送开启 仅限 AstrBot 管理员使用。")
+            return
+        if not self._auto_push.enabled:
+            yield event.plain_result("插件配置中的自动推送总开关当前已关闭。")
+            return
+
+        platform = worldstate_platform_from_tokens(split_tokens(str(args)))
+        created = await self._auto_push.enable(
+            session=event.unified_msg_origin,
+            platform=platform,
+        )
+        action = "已开启" if created else "已更新"
+        yield event.plain_result(
+            f"{action}本群自动推送（{platform}）。\n"
+            "首次轮询只建立基线；后续发现新内容时发送纯文字提醒。"
+        )
+
+    @filter.command("推送关闭")
+    async def wf_auto_push_disable(self, event: AstrMessageEvent):
+        """关闭当前群的世界状态自动推送。"""
+
+        _safe_disable_llm(event, reason="/推送关闭")
+        if event.is_private_chat():
+            yield event.plain_result("自动推送只能在群聊中配置。")
+            return
+        if not event.is_admin():
+            yield event.plain_result("/推送关闭 仅限 AstrBot 管理员使用。")
+            return
+        removed = await self._auto_push.disable(session=event.unified_msg_origin)
+        yield event.plain_result("已关闭本群自动推送。" if removed else "本群未开启自动推送。")
+
+    @filter.command("推送状态")
+    async def wf_auto_push_status(self, event: AstrMessageEvent):
+        """查看当前群的世界状态自动推送状态。"""
+
+        _safe_disable_llm(event, reason="/推送状态")
+        if event.is_private_chat():
+            yield event.plain_result("自动推送只能在群聊中配置。")
+            return
+        status = self._auto_push.status(session=event.unified_msg_origin)
+        if not status["enabled"]:
+            yield event.plain_result("本群自动推送：未开启")
+            return
+        baseline = "等待首次基线" if status.get("baseline_pending") else "运行中"
+        yield event.plain_result(
+            f"本群自动推送：{baseline}\n平台：{status.get('platform') or 'pc'}"
+        )
 
     @filter.command("退订", alias={"取消订阅"})
     async def wf_unsubscribe(
@@ -944,6 +1016,29 @@ class WarframeHelperPlugin(Star):
         async for output in self._yield_result_and_cleanup_image(result):
             yield output
 
+    @filter.command("科研", alias={"archimedea"})
+    async def wf_archimedeas(
+        self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
+    ):
+        """查询深层科研和时光科研。用法：/科研 [深层|时光]。"""
+
+        _safe_disable_llm(event, reason="/科研")
+        result = await worldstate_commands.cmd_archimedeas(
+            event=event,
+            raw_args=str(args),
+            worldstate_client=self.worldstate_client,
+        )
+        if await self._try_send_qq_markdown_for_result(
+            event=event,
+            result=result,
+            title="科研",
+            kind="/科研",
+        ):
+            yield event.make_result().stop_event()
+            return
+        async for output in self._yield_result_and_cleanup_image(result):
+            yield output
+
     @filter.command("钢铁奖励", alias={"steelreward", "sp奖励"})
     async def wf_steel_reward(
         self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
@@ -967,115 +1062,46 @@ class WarframeHelperPlugin(Star):
         async for output in self._yield_result_and_cleanup_image(result):
             yield output
 
-    @filter.command("wfmap", alias={"wf映射"})
-    async def wfmap(self, event: AstrMessageEvent, query: str = ""):
-        """将常用简写/别名映射为 warframe.market 官方词条（例如：猴p -> Wukong Prime Set）"""
+    @filter.command("wk")
+    async def wk(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+        _safe_disable_llm(event, reason="/wk")
+        result = await wiki_commands.wk(
+            event, split_tokens(str(args)), self.term_mapper, self.huiji_wiki_client
+        )
+        if result is not None:
+            yield result
+
+    @filter.command("wfmap")
+    async def wfmap(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
         _safe_disable_llm(event, reason="/wfmap")
-        query = (query or "").strip()
-        if not query:
-            result = event.plain_result("用法：/wfmap 猴p")
-            if await self._try_send_qq_markdown_for_result(
-                event=event,
-                result=result,
-                title="WF 映射",
-                kind="/wfmap",
-            ):
-                yield event.make_result().stop_event()
-                return
-            async for output in self._yield_result_and_cleanup_image(result):
-                yield output
-            return
+        result = await mapping_commands.wfmap(event, split_tokens(str(args)), self.term_mapper)
+        if result is not None:
+            yield result
 
-        item, trace = await self.term_mapper.resolve_with_trace(query)
-        if not item:
-            result = event.plain_result(f"没有找到相关物品：{query}")
-            if await self._try_send_qq_markdown_for_result(
-                event=event,
-                result=result,
-                title="WF 映射",
-                kind="/wfmap",
-            ):
-                yield event.make_result().stop_event()
-                return
-            async for output in self._yield_result_and_cleanup_image(result):
-                yield output
-            return
+    @filter.command("wfmapdel")
+    async def wfmapdel(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+        _safe_disable_llm(event, reason="/wfmapdel")
+        result = await mapping_commands.wfmapdel(event, split_tokens(str(args)), self.term_mapper)
+        if result is not None:
+            yield result
 
-        matched_name = item.get_localized_name("zh-hans") or item.name
-        header = [
-            f"{query} -> {trace.canonical_full_name}",
-            f"{trace.canonical_full_name} -> {matched_name}",
-            f"{matched_name} -> {item.slug}",
-        ]
-        rows = (
-            [WorldstateRow(title=f"Wiki: {item.wiki_link}")]
-            if item.wiki_link
-            else [WorldstateRow(title="(无 Wiki 链接)")]
-        )
-        rendered = await render_worldstate_rows_image_to_file(
-            title="WF 映射",
-            header_lines=header,
-            rows=rows,
-            accent=(79, 70, 229, 255),
-        )
-        if rendered:
-            result = event.image_result(rendered.path)
-            if await self._try_send_qq_markdown_for_result(
-                event=event,
-                result=result,
-                title="WF 映射",
-                kind="/wfmap",
-            ):
-                yield event.make_result().stop_event()
-                return
-            async for output in self._yield_result_and_cleanup_image(result):
-                yield output
-            return
-
-        extra = f"\nWiki: {item.wiki_link}" if item.wiki_link else ""
-        result = event.plain_result(
-            f"{query} -> {trace.canonical_full_name} -> {matched_name} -> {item.slug}{extra}"
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="WF 映射",
-            kind="/wfmap",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
+    @filter.command("wfmapq")
+    async def wfmapq(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+        _safe_disable_llm(event, reason="/wfmapq")
+        result = await mapping_commands.wfmapq(event, split_tokens(str(args)), self.term_mapper)
+        if result is not None:
+            yield result
 
     @filter.command("简称补充")
-    async def wf_add_alias(self, event: AstrMessageEvent, alias:str,full_name:str):
-        """管理员补充简称映射。用法：/简称补充 <简称> <全称>"""
-
+    async def wf_add_alias(
+        self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
+    ):
         _safe_disable_llm(event, reason="/简称补充")
-
-        if not event.is_admin():
-            yield event.plain_result("/简称补充 仅限管理员使用。")
-            return
-
-        if not alias or not full_name:
-            yield event.plain_result("用法：/简称补充 [简称] [全称]")
-            return
-
-        try:
-            _, _ = self.term_mapper.upsert_alias(alias=alias, full_name=full_name)
-            self.term_mapper.reload_aliases()
-            self.riven_weapon_mapper.reload_aliases()
-            self.riven_stat_mapper.reload_aliases()
-        except Exception as exc:
-            yield event.plain_result(f"简称补充失败：{exc!s}")
-            return
-
-        yield event.plain_result(
-            "简称补充成功："
-            f"{alias} -> {full_name}\n"
-            f"插件简称表：{self.term_mapper.nickname_default_file_path}\n"
-            f"数据简称表：{self.term_mapper.nickname_file_path}"
+        result = await mapping_commands.compatible_alias_add(
+            event, split_tokens(str(args)), self.term_mapper
         )
+        if result is not None:
+            yield result
 
     @filter.command_group("wf")
     def wf(self):
@@ -1205,11 +1231,11 @@ class WarframeHelperPlugin(Star):
         rows = [
             WorldstateRow(
                 title="市场查询",
-                subtitle="/wm /wmr（别名：wr、wk） /wfp（翻页 prev|next；QQ 按钮可用 wfp:prev / wfp:next）",
+                subtitle="/wm /wmr（别名：wr） /wfp（翻页 prev|next；QQ 按钮可用 wfp:prev / wfp:next）",
             ),
             WorldstateRow(
                 title="订阅",
-                subtitle="/订阅 /退订（别名：取消订阅）/订阅列表",
+                subtitle="/订阅 /退订（别名：取消订阅）/订阅列表 /推送开启 /推送关闭 /推送状态",
             ),
             WorldstateRow(
                 title="世界状态（任务）",
@@ -1233,16 +1259,16 @@ class WarframeHelperPlugin(Star):
             ),
             WorldstateRow(
                 title="奖励",
-                subtitle="/执行官猎杀（别名：archon、执行官）/钢铁奖励",
+                subtitle="/执行官猎杀（别名：archon、执行官）/科研 [深层|时光] /钢铁奖励",
             ),
             WorldstateRow(
-                title="资料查询",
-                subtitle="/武器 /战甲 /MOD /掉落 /遗物",
+                title="Wiki 查询",
+                subtitle="/wk 关键词",
             ),
             WorldstateRow(
                 title="工具",
                 subtitle=(
-                    "/wfmap（别名：wf映射）/简称补充（仅astradmin）/wm 刷新缓存（仅astradmin）/模板（别名：wf模板、渲染模板）/wf refresh（仅astradmin）/wf（本帮助；别名：wf帮助）"
+                    "/wfmap /wfmapdel（仅astradmin）/wfmapq /wm 刷新缓存（仅astradmin）/模板（别名：wf模板、渲染模板）/wf refresh（仅astradmin）/wf（本帮助；别名：wf帮助）"
                 ),
             ),
         ]
@@ -1372,7 +1398,7 @@ class WarframeHelperPlugin(Star):
             async for output in self._yield_result_and_cleanup_image(res):
                 yield output
 
-    @filter.command("wmr", alias={"wr", "wk"})
+    @filter.command("wmr", alias={"wr"})
     async def wmr(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
         """查询 warframe.market 紫卡（Riven）一口价拍卖。
 
@@ -1882,112 +1908,6 @@ class WarframeHelperPlugin(Star):
             result=result,
             title="轮回奖励",
             kind="/轮回奖励",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
-
-    @filter.command("武器", alias={"weapon", "wfweapon"})
-    async def wf_weapon(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
-        """根据 PublicExport 查询武器（中文优先，也支持英文/uniqueName 匹配）。用法：/武器 绝路"""
-
-        _safe_disable_llm(event, reason="/武器")
-        result = await public_export_commands.cmd_weapon(
-            event=event,
-            query=str(args),
-            public_export_client=self.public_export_client,
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="武器",
-            kind="/武器",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
-
-    @filter.command("战甲", alias={"warframe", "frame", "wfwarframe"})
-    async def wf_warframe(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
-        """根据 PublicExport 查询战甲条目（基础面板信息，字段尽量容错）。用法：/战甲 牛甲"""
-
-        _safe_disable_llm(event, reason="/战甲")
-        result = await public_export_commands.cmd_warframe(
-            event=event,
-            query=str(args),
-            public_export_client=self.public_export_client,
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="战甲",
-            kind="/战甲",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
-
-    @filter.command("MOD", alias={"mod", "模组", "mods"})
-    async def wf_mod(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
-        """根据 PublicExport 查询 MOD/升级条目（名称模糊匹配）。用法：/MOD 过载"""
-
-        _safe_disable_llm(event, reason="/MOD")
-        result = await public_export_commands.cmd_mod(
-            event=event,
-            query=str(args),
-            public_export_client=self.public_export_client,
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="MOD",
-            kind="/MOD",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
-
-    @filter.command("掉落", alias={"drop", "drops"})
-    async def wf_drops(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
-        """根据 WFCD/warframe-drop-data 查询物品掉落地点。用法：/掉落 <物品> [数量<=30]"""
-
-        _safe_disable_llm(event, reason="/掉落")
-        result = await drop_data_commands.cmd_drops(
-            event=event,
-            raw_args=str(args),
-            drop_data_client=self.drop_data_client,
-            public_export_client=self.public_export_client,
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="掉落",
-            kind="/掉落",
-        ):
-            yield event.make_result().stop_event()
-            return
-        async for output in self._yield_result_and_cleanup_image(result):
-            yield output
-
-    @filter.command("遗物", alias={"relic", "relics"})
-    async def wf_relic(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
-        """根据 WFCD/warframe-drop-data 查询遗物奖池。用法：/遗物 <纪元> <遗物名> 或 /遗物 <遗物名>"""
-
-        _safe_disable_llm(event, reason="/遗物")
-        result = await drop_data_commands.cmd_relic(
-            event=event,
-            raw_args=str(args),
-            drop_data_client=self.drop_data_client,
-        )
-        if await self._try_send_qq_markdown_for_result(
-            event=event,
-            result=result,
-            title="遗物",
-            kind="/遗物",
         ):
             yield event.make_result().stop_event()
             return

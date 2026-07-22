@@ -106,6 +106,7 @@ def build_render_theme_context(
   --wf-theme-muted: {muted};
   --wf-theme-border: {border};
   --wf-theme-tag: {tag};
+  min-height: 100vh;
   position: relative;
   isolation: isolate;
   background-image: url("{image_uri}") !important;
