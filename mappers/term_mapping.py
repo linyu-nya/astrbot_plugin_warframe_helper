@@ -302,10 +302,15 @@ class WarframeTermMapper:
 
     def find_effective_aliases(self, full_name: str) -> list[EffectiveAliasEntry]:
         self._ensure_aliases_loaded()
-        if normalize_alias_key(full_name) in self._alias_full_names:
+        target = normalize_alias_value(full_name).casefold()
+        alias_key = normalize_alias_key(full_name)
+        if (
+            alias_key in self._alias_full_names
+            and normalize_alias_value(self._alias_full_names[alias_key]).casefold()
+            != target
+        ):
             return []
 
-        target = normalize_alias_value(full_name).casefold()
         if not target:
             return []
         return [

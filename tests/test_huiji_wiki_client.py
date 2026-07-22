@@ -205,6 +205,33 @@ async def test_confirmed_missing_or_invalid_page_returns_missing(monkeypatch, fl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"missing": False},
+        {"missing": None},
+        {"missing": 0},
+        {"missing": ""},
+        {"missing": {}},
+        {"invalid": False},
+        {"invalid": None},
+        {"invalid": 0},
+        {"invalid": ""},
+        {"invalid": {}},
+        {"missing": True, "invalid": False},
+    ],
+)
+async def test_non_true_missing_or_invalid_flags_are_unavailable(
+    monkeypatch, flags
+):
+    install_session(monkeypatch, FakeResponse(page_payload(**flags)))
+
+    result = await HuijiWikiClient().lookup("不存在")
+
+    assert result == HuijiWikiResult(HuijiWikiStatus.UNAVAILABLE, None, None)
+
+
+@pytest.mark.asyncio
 async def test_missing_fullurl_builds_encoded_page_url(monkeypatch):
     install_session(
         monkeypatch,

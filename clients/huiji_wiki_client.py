@@ -11,6 +11,9 @@ import aiohttp
 from ..http_utils import request_kwargs_for_url
 
 
+_ABSENT = object()
+
+
 class HuijiWikiStatus(str, Enum):
     FOUND = "found"
     MISSING = "missing"
@@ -125,8 +128,16 @@ class HuijiWikiClient:
         page = pages[0]
         if not isinstance(page, dict):
             return self._unavailable()
-        if "missing" in page or "invalid" in page:
-            return HuijiWikiResult(HuijiWikiStatus.MISSING)
+
+        missing_flag = page.get("missing", _ABSENT)
+        invalid_flag = page.get("invalid", _ABSENT)
+        present_flags = [
+            flag for flag in (missing_flag, invalid_flag) if flag is not _ABSENT
+        ]
+        if present_flags:
+            if all(flag is True for flag in present_flags):
+                return HuijiWikiResult(HuijiWikiStatus.MISSING)
+            return self._unavailable()
 
         page_id = page.get("pageid")
         namespace = page.get("ns")

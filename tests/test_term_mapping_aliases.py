@@ -239,6 +239,23 @@ def test_reverse_lookup_rejects_alias_instead_of_full_name(tmp_path: Path) -> No
     assert mapper.find_effective_aliases("  OROKIN   EYE ") == []
 
 
+def test_reverse_lookup_allows_self_mapping_full_name(tmp_path: Path) -> None:
+    mapper, _, _, _ = _mapper(
+        tmp_path,
+        base={
+            "excalibur": "Excalibur",
+            "圣剑": "Excalibur",
+            "咖喱": "Excalibur",
+        },
+    )
+
+    assert set(mapper.find_effective_aliases(" EXCALIBUR ")) == {
+        EffectiveAliasEntry(alias="excalibur", full_name="Excalibur", source=SOURCE_BASE),
+        EffectiveAliasEntry(alias="圣剑", full_name="Excalibur", source=SOURCE_BASE),
+        EffectiveAliasEntry(alias="咖喱", full_name="Excalibur", source=SOURCE_BASE),
+    }
+
+
 def test_all_pure_alias_operations_skip_market_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
