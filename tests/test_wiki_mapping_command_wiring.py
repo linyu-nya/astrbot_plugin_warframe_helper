@@ -117,5 +117,17 @@ def test_help_mentions_new_wiki_and_mapping_commands():
     help_start = source.index("async def _handle_wf_help")
     help_end = source.index("\n    @", help_start)
     help_source = source[help_start:help_end]
-    for command in ("/wk", "/wfmap", "/wfmapdel", "/wfmapq", "/简称补充"):
+    for command in ("/wk", "/wfmap", "/wfmapdel", "/wfmapq"):
         assert command in help_source
+
+
+def test_compatible_alias_add_remains_wired_but_is_not_shown_in_help():
+    source = _main_source()
+    help_start = source.index("async def _handle_wf_help")
+    help_end = source.index("\n    @", help_start)
+    help_source = source[help_start:help_end]
+
+    assert "简称补充" not in help_source
+    assert '@filter.command("简称补充")' in source
+    assert "async def wf_add_alias" in source
+    assert "mapping_commands.compatible_alias_add" in source
