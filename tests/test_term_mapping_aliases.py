@@ -103,7 +103,11 @@ def test_alias_only_resolves_exact_longest_prefix_and_unknown_passthrough(
 ) -> None:
     mapper, _, _, _ = _mapper(
         tmp_path,
-        base={"咖喱": "Excalibur", "咖喱p": "Excalibur Prime"},
+        base={
+            "咖喱": "Excalibur",
+            "咖喱p": "Excalibur Prime",
+            "圣英": "afentis",
+        },
     )
 
     assert mapper.resolve_alias_only(" 咖 喱 ") == AliasResolution(
@@ -112,11 +116,41 @@ def test_alias_only_resolves_exact_longest_prefix_and_unknown_passthrough(
         alias_key="咖喱",
         canonical_full_name="Excalibur",
     )
+    assert mapper.resolve_alias_only("圣英") == AliasResolution(
+        original_query="圣英",
+        matched=True,
+        alias_key="圣英",
+        canonical_full_name="afentis",
+    )
+    assert mapper.resolve_alias_only("圣英prime") == AliasResolution(
+        original_query="圣英prime",
+        matched=True,
+        alias_key="圣英",
+        canonical_full_name="afentis Prime",
+    )
     assert mapper.resolve_alias_only("咖喱P蓝图") == AliasResolution(
         original_query="咖喱P蓝图",
         matched=True,
         alias_key="咖喱p",
-        canonical_full_name="Excalibur Prime",
+        canonical_full_name="Excalibur Prime 蓝图",
+    )
+    assert mapper.resolve_alias_only("咖喱   prime   蓝图") == AliasResolution(
+        original_query="咖喱   prime   蓝图",
+        matched=True,
+        alias_key="咖喱p",
+        canonical_full_name="Excalibur Prime 蓝图",
+    )
+    assert mapper.resolve_alias_only("  圣英   PRIME   蓝图  ") == AliasResolution(
+        original_query="  圣英   PRIME   蓝图  ",
+        matched=True,
+        alias_key="圣英",
+        canonical_full_name="afentis Prime 蓝图",
+    )
+    assert mapper.resolve_alias_only("圣英总图") == AliasResolution(
+        original_query="圣英总图",
+        matched=True,
+        alias_key="圣英",
+        canonical_full_name="afentis 蓝图",
     )
     assert mapper.resolve_alias_only("未收录 词条") == AliasResolution(
         original_query="未收录 词条",
@@ -274,3 +308,129 @@ def test_all_pure_alias_operations_skip_market_paths(
     assert mapper.delete_user_alias("用户") == "deleted"
     assert mapper._loaded is False
     assert not mapper.items_cache_path.exists()
+
+
+# --- Wiki suffix shorthand -------------------------------------------------
+#
+# `p` / `prime` mean Prime and `总图` / `蓝图` mean the blueprint, both for
+# `/wk` lookups and for the builtin mapping shown after `/wfmapdel`.
+# See docs/superpowers/specs/2026-07-27-wiki-prime-blueprint-shorthand-design.md
+
+_SHORTHAND_BASE = {
+    "圣英": "afentis",
+    "咖喱": "Excalibur",
+    "咖喱p": "Excalibur Prime",
+    "wukong": "wukong",
+    "Am": "am",
+    "蓝图测": "afentis 蓝图",
+}
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("圣英", "afentis"),
+        ("圣英p", "afentis Prime"),
+        ("圣英P", "afentis Prime"),
+        ("圣英 prime", "afentis Prime"),
+        ("圣英   PRIME   ", "afentis Prime"),
+        ("圣英总图", "afentis 蓝图"),
+        ("圣英蓝图", "afentis 蓝图"),
+        ("圣英p总图", "afentis Prime 蓝图"),
+        ("圣英P蓝图", "afentis Prime 蓝图"),
+        ("圣英prime总图", "afentis Prime 蓝图"),
+        ("圣英 prime 蓝图", "afentis Prime 蓝图"),
+        ("咖喱p总图", "Excalibur Prime 蓝图"),
+        ("wukong p总图", "wukong Prime 蓝图"),
+        # Union with markers already present in the canonical name.
+        ("蓝图测", "afentis 蓝图"),
+        ("蓝图测总图", "afentis 蓝图"),
+        ("蓝图测p", "afentis Prime 蓝图"),
+        ("蓝图测p总图", "afentis Prime 蓝图"),
+        ("咖喱p p", "Excalibur Prime"),
+    ],
+)
+def test_wiki_suffix_shorthand_expands(
+    tmp_path: Path, query: str, expected: str
+) -> None:
+    mapper, _, _, _ = _mapper(tmp_path, base=_SHORTHAND_BASE)
+    result = mapper.resolve_alias_only(query)
+    assert result.matched is True
+    assert result.canonical_full_name == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # A `p` glued to a Latin alias is part of the name, not a marker.
+        ("wukongp",),
+        ("wukongp总图",),
+        ("Amp",),
+        # Markers in the wrong order.
+        ("咖喱总图p",),
+        # Repeated markers.
+        ("咖喱pp",),
+        # Trailing garbage that is not a marker at all.
+        ("咖喱xyz",),
+    ],
+)
+def test_wiki_suffix_shorthand_rejects_non_conforming_tails(
+    tmp_path: Path, query: tuple[str]
+) -> None:
+    """A tail that is not a valid suffix must not be rewritten or dropped."""
+
+    text = query[0]
+    mapper, _, _, _ = _mapper(tmp_path, base=_SHORTHAND_BASE)
+    result = mapper.resolve_alias_only(text)
+    assert result.matched is False
+    assert result.alias_key is None
+    assert result.canonical_full_name == text
+
+
+def test_wiki_suffix_shorthand_is_idempotent(tmp_path: Path) -> None:
+    mapper, _, _, _ = _mapper(tmp_path, base=_SHORTHAND_BASE)
+    once = mapper.resolve_alias_only("圣英p总图").canonical_full_name
+    assert once == "afentis Prime 蓝图"
+    assert mapper.resolve_alias_only(once).canonical_full_name == once
+
+
+def test_wiki_suffix_shorthand_user_mapping_wins_until_deleted(
+    tmp_path: Path,
+) -> None:
+    """A user alias overrides the builtin expansion; deleting it restores it."""
+
+    mapper, _, _, _ = _mapper(
+        tmp_path,
+        base={"圣英": "afentis"},
+        user={"圣英p": "Wrong Name"},
+    )
+
+    assert mapper.resolve_alias_only("圣英p").canonical_full_name == "Wrong Name"
+
+    assert mapper.delete_user_alias("圣英p") == "deleted"
+    assert mapper.resolve_alias_only("圣英p").canonical_full_name == "afentis Prime"
+
+
+def test_wiki_suffix_shorthand_exact_alias_beats_prefix_expansion(
+    tmp_path: Path,
+) -> None:
+    mapper, _, _, _ = _mapper(tmp_path, base={"圣英": "afentis", "圣英p": "Exact"})
+    assert mapper.resolve_alias_only("圣英p").canonical_full_name == "Exact"
+
+
+def test_wiki_suffix_shorthand_leaves_plain_lookups_untouched(
+    tmp_path: Path,
+) -> None:
+    mapper, _, _, _ = _mapper(tmp_path, base=_SHORTHAND_BASE)
+    assert mapper.resolve_alias_only(" 咖 喱 ") == AliasResolution(
+        original_query=" 咖 喱 ",
+        matched=True,
+        alias_key="咖喱",
+        canonical_full_name="Excalibur",
+    )
+    assert mapper.resolve_alias_only("未收录 词条") == AliasResolution(
+        original_query="未收录 词条",
+        matched=False,
+        alias_key=None,
+        canonical_full_name="未收录 词条",
+    )

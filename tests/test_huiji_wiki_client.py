@@ -36,11 +36,13 @@ class FakeResponse:
         content_type: str = "application/json; charset=utf-8",
         headers: dict[str, str] | None = None,
         chunk_size: int | None = None,
+        url: str | None = None,
     ) -> None:
         raw = body if body is not None else json.dumps(payload).encode("utf-8")
         self.status = status
         self.headers = {"Content-Type": content_type, **(headers or {})}
         self.content = FakeContent(raw, chunk_size=chunk_size)
+        self.url = url
 
     async def __aenter__(self):
         return self
@@ -50,7 +52,10 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, response_or_error: FakeResponse | BaseException) -> None:
+    def __init__(
+        self,
+        response_or_error: FakeResponse | BaseException | list[FakeResponse | BaseException],
+    ) -> None:
         self.response_or_error = response_or_error
         self.get_calls: list[tuple[str, dict[str, object]]] = []
 
@@ -62,14 +67,18 @@ class FakeSession:
 
     def get(self, url: str, **kwargs):
         self.get_calls.append((url, kwargs))
-        if isinstance(self.response_or_error, BaseException):
-            raise self.response_or_error
-        return self.response_or_error
+        response_or_error = self.response_or_error
+        if isinstance(response_or_error, list):
+            index = min(len(self.get_calls) - 1, len(response_or_error) - 1)
+            response_or_error = response_or_error[index]
+        if isinstance(response_or_error, BaseException):
+            raise response_or_error
+        return response_or_error
 
 
 def install_session(
     monkeypatch: pytest.MonkeyPatch,
-    response_or_error: FakeResponse | BaseException,
+    response_or_error: FakeResponse | BaseException | list[FakeResponse | BaseException],
 ):
     session = FakeSession(response_or_error)
     constructor_calls: list[dict[str, object]] = []
@@ -155,6 +164,117 @@ async def test_redirect_uses_final_page_title_and_fullurl(monkeypatch):
     assert result.status is HuijiWikiStatus.FOUND
     assert result.title == "Volt Prime"
     assert result.url == "https://warframe.huijiwiki.com/wiki/Volt_Prime"
+
+
+@pytest.mark.asyncio
+async def test_api_failure_uses_exact_search_redirect_as_found_page(monkeypatch):
+    session, _ = install_session(
+        monkeypatch,
+        [
+            FakeResponse(page_payload(), status=403),
+            FakeResponse(
+                body=b"",
+                status=302,
+                content_type="text/html",
+                headers={"Location": "/wiki/Afentis_Prime"},
+            ),
+        ],
+    )
+
+    result = await HuijiWikiClient().lookup("afentis Prime")
+
+    assert result == HuijiWikiResult(
+        HuijiWikiStatus.FOUND,
+        title="afentis Prime",
+        url="https://warframe.huijiwiki.com/wiki/Afentis_Prime",
+    )
+    assert len(session.get_calls) == 2
+    search_url, request = session.get_calls[1]
+    parsed = urlparse(search_url)
+    assert parsed.path == "/index.php"
+    assert parse_qs(parsed.query)["search"] == ["afentis Prime"]
+    assert request["allow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_api_failure_rejects_external_search_redirect(monkeypatch):
+    session, _ = install_session(
+        monkeypatch,
+        [
+            FakeResponse(page_payload(), status=403),
+            FakeResponse(
+                body=b"",
+                status=302,
+                content_type="text/html",
+                headers={"Location": "https://evil.example/wiki/Afentis_Prime"},
+            ),
+        ],
+    )
+
+    result = await HuijiWikiClient().lookup("afentis Prime")
+
+    assert result == HuijiWikiResult(HuijiWikiStatus.UNAVAILABLE)
+    assert len(session.get_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_api_failure_accepts_search_response_already_on_exact_page(monkeypatch):
+    session, _ = install_session(
+        monkeypatch,
+        [
+            FakeResponse(page_payload(), status=403),
+            FakeResponse(
+                body=b"<html></html>",
+                status=200,
+                content_type="text/html",
+                url="https://warframe.huijiwiki.com/wiki/Afentis_Prime",
+            ),
+        ],
+    )
+
+    result = await HuijiWikiClient().lookup("afentis Prime")
+
+    assert result == HuijiWikiResult(
+        HuijiWikiStatus.FOUND,
+        title="afentis Prime",
+        url="https://warframe.huijiwiki.com/wiki/Afentis_Prime",
+    )
+    assert len(session.get_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_api_and_search_failure_probe_direct_page(monkeypatch):
+    search_url = HuijiWikiClient().build_search_url("afentis Prime")
+    session, _ = install_session(
+        monkeypatch,
+        [
+            FakeResponse(page_payload(), status=403),
+            FakeResponse(
+                body=b"<html>search results</html>",
+                status=200,
+                content_type="text/html",
+                url=search_url,
+            ),
+            FakeResponse(
+                body=b"<html>exact page</html>",
+                status=200,
+                content_type="text/html",
+                url="https://warframe.huijiwiki.com/wiki/afentis_Prime",
+            ),
+        ],
+    )
+
+    result = await HuijiWikiClient().lookup("afentis Prime")
+
+    assert result == HuijiWikiResult(
+        HuijiWikiStatus.FOUND,
+        title="afentis Prime",
+        url="https://warframe.huijiwiki.com/wiki/afentis_Prime",
+    )
+    assert len(session.get_calls) == 3
+    direct_url, request = session.get_calls[2]
+    assert direct_url == "https://warframe.huijiwiki.com/wiki/afentis_Prime"
+    assert request["allow_redirects"] is False
 
 
 @pytest.mark.asyncio
@@ -267,6 +387,13 @@ def test_search_url_round_trips_all_keywords(keyword):
     }
     if keyword == "|":
         assert "search=%7C" in url
+
+
+def test_page_url_normalizes_spaces_and_encodes_title():
+    assert (
+        HuijiWikiClient().build_page_url(" afentis   Prime 蓝图 ")
+        == "https://warframe.huijiwiki.com/wiki/afentis_Prime_%E8%93%9D%E5%9B%BE"
+    )
 
 
 @pytest.mark.asyncio

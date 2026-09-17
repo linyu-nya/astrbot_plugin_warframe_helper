@@ -81,6 +81,10 @@ class FakeClient:
             raise self.search_error
         return "https://wiki.test/search?keyword=" + quote(keyword, safe="")
 
+    def build_page_url(self, keyword: str) -> str:
+        page_title = "_".join(str(keyword or "").split())
+        return "https://wiki.test/wiki/" + quote(page_title, safe="_")
+
 
 def _found(url: str = "https://wiki.test/wiki/Volt"):
     return HuijiWikiResult(HuijiWikiStatus.FOUND, url=url)
@@ -113,6 +117,22 @@ async def test_original_keyword_found_uses_single_space_label_and_wiki_url():
 
 
 @pytest.mark.asyncio
+async def test_unmapped_keyword_normalizes_prime_case_for_wiki_lookup():
+    event = FakeEvent(asynchronous=True)
+    mapper = FakeMapper()
+    client = FakeClient(_found("https://wiki.test/wiki/Afentis_Prime_Blueprint"))
+
+    await wk(event, ["Afentis", "prime", "蓝图"], mapper, client)
+
+    assert mapper.calls == ["Afentis prime 蓝图"]
+    assert client.lookups == ["Afentis Prime 蓝图"]
+    assert event.messages == [
+        "以下是“Afentis prime 蓝图”的 Wiki 页面：\n"
+        "https://wiki.test/wiki/Afentis_Prime_Blueprint"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_alias_found_uses_canonical_name_but_preserves_original_label():
     event = FakeEvent(asynchronous=True)
     mapper = FakeMapper(Resolution(True, "Oxylus"))
@@ -141,26 +161,35 @@ async def test_found_with_invalid_url_degrades_to_unavailable_search(url):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "prefix"),
-    [
-        (HuijiWikiStatus.MISSING, "没有查到“原词”，以下是 Wiki 搜索页："),
-        (
-            HuijiWikiStatus.UNAVAILABLE,
-            "暂时无法确认“原词”是否有精确词条，以下是 Wiki 搜索页：",
-        ),
-    ],
-)
-async def test_non_found_statuses_reply_with_search_page(status, prefix):
+async def test_confirmed_missing_reply_uses_search_page():
     event = FakeEvent(asynchronous=True)
     mapper = FakeMapper(Resolution(True, "规范词"))
-    client = FakeClient(HuijiWikiResult(status), None)
+    client = FakeClient(HuijiWikiResult(HuijiWikiStatus.MISSING), None)
 
     await wk(event, ["原词"], mapper, client)
 
     assert client.lookups == ["规范词"]
     assert client.searches == ["规范词"]
-    assert event.messages == [prefix + "\nhttps://wiki.test/search?keyword=%E8%A7%84%E8%8C%83%E8%AF%8D"]
+    assert event.messages == [
+        "没有查到“原词”，以下是 Wiki 搜索页：\n"
+        "https://wiki.test/search?keyword=%E8%A7%84%E8%8C%83%E8%AF%8D"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mapped_keyword_uses_direct_page_when_wiki_verification_is_blocked():
+    event = FakeEvent(asynchronous=True)
+    mapper = FakeMapper(Resolution(True, "afentis Prime"))
+    client = FakeClient(HuijiWikiResult(HuijiWikiStatus.UNAVAILABLE))
+
+    await wk(event, ["圣英prime"], mapper, client)
+
+    assert client.lookups == ["afentis Prime"]
+    assert client.searches == []
+    assert event.messages == [
+        "以下是“圣英prime”的 Wiki 页面：\n"
+        "https://wiki.test/wiki/afentis_Prime"
+    ]
 
 
 @pytest.mark.asyncio

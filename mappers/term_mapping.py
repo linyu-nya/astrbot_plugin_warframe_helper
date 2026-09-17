@@ -14,6 +14,7 @@ from astrbot.api import logger
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from ..http_utils import fetch_json
+from ..utils.text import normalize_wiki_keyword
 from .nickname_registry import (
     NicknameRegistry,
     SOURCE_BASE,
@@ -28,6 +29,34 @@ from .nickname_registry import (
 WARFRAME_MARKET_V2_BASE_URL = "https://api.warframe.market/v2"
 WARFRAME_MARKET_REQUEST_LANGUAGE = "zh-hans"
 WARFRAME_MARKET_ITEMS_CACHE_FILE = "warframe_market_v2_items_zh_hans_cache.json"
+
+# English component words, kept in sync with `_parse_modifiers`' part map.
+_PART_WORDS: set[str] = {
+    "neuroptics",
+    "chassis",
+    "systems",
+    "receiver",
+    "barrel",
+    "stock",
+    "blade",
+    "handle",
+}
+
+# Tokens that mark an entry as one component of a larger item. Used to stop the
+# fallback scan from answering a whole-item query with an arbitrary part:
+# `/wm 悦音` used to resolve to 悦音 Prime 枪管 purely because it sorted first.
+_COMPONENT_TOKENS: set[str] = _PART_WORDS | {
+    "枪机",
+    "枪管",
+    "枪托",
+    "刀刃",
+    "握柄",
+    "机体",
+    "系统",
+    "神经",
+}
+
+_BLUEPRINT_TOKENS: set[str] = {"blueprint", "bp", "蓝图", "总图", "图纸"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,10 +148,42 @@ class _PreparedItemQuery:
     prefer_prime: bool
 
 
+_CJK = r"\u4e00-\u9fff"
+
+# Chinese component / modifier words that users glue onto the base name, e.g.
+# "\u60a6\u97f3\u67aa\u673a" or "\u5ddd\u6d41\u4e0d\u606f\u4e00\u5957". Deliberately limited to distinctive multi-character
+# words: splitting on short or ambiguous ones such as \u5934 or \u7ec4 would fragment
+# unrelated item names.
+_GLUED_SUFFIX_WORDS: tuple[str, ...] = (
+    "\u67aa\u673a",
+    "\u67aa\u7ba1",
+    "\u67aa\u6258",
+    "\u5200\u5203",
+    "\u63e1\u67c4",
+    "\u673a\u4f53",
+    "\u7cfb\u7edf",
+    "\u795e\u7ecf",
+    "\u84dd\u56fe",
+    "\u603b\u56fe",
+    "\u56fe\u7eb8",
+    "\u4e00\u5957",
+)
+
+_GLUED_SUFFIX_RE = re.compile(
+    rf"(?<=[{_CJK}])(?=(?:{'|'.join(_GLUED_SUFFIX_WORDS)}))"
+)
+
+# Item names mix CJK and Latin, sometimes without a separator in user input
+# (e.g. "\u5ddd\u6d41\u4e0d\u606fprime", "\u60a6\u97f3P"). Treat the script change as a token boundary.
+_SCRIPT_BOUNDARY_RE = re.compile(rf"(?<=[{_CJK}])(?=[0-9a-z])|(?<=[0-9a-z])(?=[{_CJK}])")
+
+
 def _normalize_name_key(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or ""))
     text = text.strip().lower().replace("_", " ").replace("-", " ")
     text = re.sub(r"[^0-9a-z\u4e00-\u9fff ]+", " ", text)
+    text = _GLUED_SUFFIX_RE.sub(" ", text)
+    text = _SCRIPT_BOUNDARY_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -132,6 +193,46 @@ def _tokenize_name(text: str) -> list[str]:
     if not key:
         return []
     return [t for t in key.split(" ") if t]
+
+
+# A trailing `p` / `P` behaves as the Prime marker, but only when it stands on
+# its own — after a Chinese character or a space. Glued onto a Latin name the
+# `p` is part of the name itself ("Amp" must not read as "Am" + Prime).
+_TRAILING_PRIME_MARKER_RE = re.compile(r"(?<=[一-鿿\s])p\s*$", re.IGNORECASE)
+_LEADING_PRIME_MARKER_RE = re.compile(r"^圣装\s*")
+_HAS_PRIME_WORD_RE = re.compile(r"(?<![a-z])prime(?![a-z])", re.IGNORECASE)
+
+
+def _rewrite_prime_marker(name: str) -> str:
+    """Turn a `p` / `圣装` marker into a `Prime` word in the canonical name.
+
+    `_parse_modifiers` only records that Prime was requested; without this the
+    marker stays in the name, so a query like `川流不息p` keeps the literal `p`
+    and matches no item at all.
+
+    Returns the name untouched when no marker is actually present: `Amp` ends
+    in a `p` but that `p` belongs to the name, and `_parse_modifiers` reports
+    `wants_prime` for any Latin word ending in `p`.
+    """
+
+    text = str(name or "").strip()
+    if not text or _HAS_PRIME_WORD_RE.search(text):
+        return text
+
+    found_marker = False
+
+    if _LEADING_PRIME_MARKER_RE.match(text):
+        text = _LEADING_PRIME_MARKER_RE.sub("", text).strip()
+        found_marker = True
+
+    stripped = _TRAILING_PRIME_MARKER_RE.sub("", text).strip()
+    if stripped != text:
+        text = stripped
+        found_marker = True
+
+    if not found_marker or not text:
+        return name
+    return f"{text} Prime"
 
 
 def _slugify_text(text: str) -> str:
@@ -155,6 +256,123 @@ def _humanize_name(text: str) -> str:
         return " ".join(w.capitalize() for w in words)
 
     return re.sub(r"\s+", " ", src)
+
+
+# Wiki suffix shorthand: `p` / `prime` mean Prime and `总图` / `蓝图` mean the
+# blueprint. Both markers are optional, at least one must be present, and the
+# order is fixed:
+#     suffix := PrimeMarker? BlueprintMarker?
+_WIKI_SUFFIX_RE = re.compile(
+    r"^(?:(?P<prime>prime|p)(?P<blueprint>总图|蓝图)?|(?P<blueprint_only>总图|蓝图))$",
+    re.IGNORECASE,
+)
+# Only a leading Prime marker is subject to the connection-boundary rule.
+_PRIME_MARKER_START_RE = re.compile(r"^(?:prime|p)(?![a-z])", re.IGNORECASE)
+# `p` as an alias key also swallows the first letter of a written-out `prime`,
+# so `咖喱 prime` arrives as alias `咖喱p` plus a stray `rime`.
+_RIME_LEFTOVER_RE = re.compile(r"^(?i:rime)(?![a-z])")
+_PRIME_TAIL_RE = re.compile(r"\s*(?<![a-z])prime(?![a-z])\s*$", re.IGNORECASE)
+_BLUEPRINT_TAIL_RE = re.compile(r"\s*(?:蓝图|总图)\s*$")
+
+
+def _is_cjk(char: str) -> bool:
+    return "一" <= char <= "鿿"
+
+
+def _split_alias_tail(query: str, alias_key: str) -> tuple[str, bool]:
+    """Return what follows `alias_key` in `query`, keeping its original spacing.
+
+    The remainder is cut out of the NFKC-normalised query rather than the
+    whitespace-stripped matching key, because the Prime-marker boundary rule
+    depends on whether the two parts are separated.
+    """
+
+    source = unicodedata.normalize("NFKC", str(query or ""))
+    consumed = ""
+    for index, char in enumerate(source):
+        consumed += normalize_alias_key(char)
+        if len(consumed) < len(alias_key):
+            continue
+        if consumed != alias_key:
+            return "", False
+
+        remainder = source[index + 1 :]
+        if alias_key.endswith("p"):
+            remainder = _RIME_LEFTOVER_RE.sub("", remainder, count=1)
+        return remainder, bool(remainder[:1].isspace())
+
+    return "", False
+
+
+def _split_wiki_tail(canonical_full_name: str) -> tuple[str, bool, bool]:
+    """Split `基础名 + Prime? + 蓝图?` into its parts."""
+
+    text = str(canonical_full_name or "").strip()
+    has_blueprint = False
+    has_prime = False
+
+    match = _BLUEPRINT_TAIL_RE.search(text)
+    if match is not None:
+        text = text[: match.start()].strip()
+        has_blueprint = True
+
+    match = _PRIME_TAIL_RE.search(text)
+    if match is not None:
+        text = text[: match.start()].strip()
+        has_prime = True
+
+    return text, has_prime, has_blueprint
+
+
+def _join_wiki_tail(base: str, *, has_prime: bool, has_blueprint: bool) -> str:
+    parts = [str(base or "").strip()]
+    if has_prime:
+        parts.append("Prime")
+    if has_blueprint:
+        parts.append("蓝图")
+    return " ".join(part for part in parts if part)
+
+
+def _expand_wiki_suffix(
+    canonical_full_name: str,
+    remainder: str,
+    *,
+    spaced: bool,
+    alias_key: str,
+) -> str | None:
+    """Apply the `p` / `总图` shorthand to an alias result.
+
+    Returns the rebuilt canonical name, or None when the remainder does not
+    follow the suffix grammar and the name must not be rewritten.
+    """
+
+    collapsed = re.sub(r"\s+", "", remainder).casefold()
+    if not collapsed:
+        return canonical_full_name
+
+    match = _WIKI_SUFFIX_RE.fullmatch(collapsed)
+    if match is None:
+        return None
+
+    # `wukongp` must not read as `wukong` + Prime. Chinese base aliases may be
+    # written adjacently, Latin ones need a separator.
+    if _PRIME_MARKER_START_RE.match(collapsed) and not spaced:
+        if not alias_key or not _is_cjk(alias_key[-1]):
+            return None
+
+    base, has_prime, has_blueprint = _split_wiki_tail(canonical_full_name)
+    if not base:
+        return canonical_full_name
+
+    return _join_wiki_tail(
+        base,
+        has_prime=has_prime or bool(match.group("prime")),
+        has_blueprint=(
+            has_blueprint
+            or bool(match.group("blueprint"))
+            or bool(match.group("blueprint_only"))
+        ),
+    )
 
 
 class WarframeTermMapper:
@@ -276,11 +494,28 @@ class WarframeTermMapper:
                 alias_key=None,
                 canonical_full_name=original_query,
             )
+        canonical_full_name = normalize_wiki_keyword(canonical_full_name)
+        remainder, spaced = _split_alias_tail(original_query, alias_key)
+        expanded = _expand_wiki_suffix(
+            canonical_full_name,
+            remainder,
+            spaced=spaced,
+            alias_key=alias_key,
+        )
+        if expanded is None:
+            # The tail does not follow the suffix grammar. Do not guess: hand
+            # the raw text back so callers search for what the user typed.
+            return AliasResolution(
+                original_query=original_query,
+                matched=False,
+                alias_key=None,
+                canonical_full_name=original_query,
+            )
         return AliasResolution(
             original_query=original_query,
             matched=True,
             alias_key=alias_key,
-            canonical_full_name=canonical_full_name,
+            canonical_full_name=expanded,
         )
 
     def upsert_user_alias(self, *, alias: str, full_name: str) -> tuple[str, str]:
@@ -601,6 +836,8 @@ class WarframeTermMapper:
         ) = self._parse_modifiers(raw_query=query, alias_tail_norm=alias_tail)
 
         canonical_name = _humanize_name(alias_full_name)
+        if wants_prime:
+            canonical_name = _rewrite_prime_marker(canonical_name)
         if part_hint and part_hint.lower() not in canonical_name.lower():
             canonical_name = f"{canonical_name} {part_hint}".strip()
 
@@ -629,10 +866,7 @@ class WarframeTermMapper:
         part: str | None = None
         root_words: list[str] = []
 
-        part_set: set[str] = {
-            "neuroptics", "chassis", "systems",
-            "receiver", "barrel", "stock", "blade", "handle",
-        }
+        part_set: set[str] = _PART_WORDS
         for w in words:
             lw = w.strip().lower()
             if lw == "prime":
@@ -680,7 +914,13 @@ class WarframeTermMapper:
             _add(f"{root} Prime {part} Blueprint")
 
         should_try_prime = prepared.wants_prime or has_prime or prepared.prefer_prime
-        should_try_set = prepared.wants_set or has_set or prepared.prefer_prime
+        # A name that already resolves to a Prime entry should also offer its
+        # Set. Weapon aliases live in the riven-weapon nickname section, which
+        # `prefer_prime` does not cover, so `/wm 悦音p` never reached
+        # `euphona_prime_set` without this.
+        should_try_set = (
+            prepared.wants_set or has_set or has_prime or prepared.prefer_prime
+        )
 
         if should_try_prime and not part:
             _add(f"{root} Prime")
@@ -728,6 +968,16 @@ class WarframeTermMapper:
             score += 8
         elif prepared.wants_set and "set" not in item_tokens:
             score -= 8
+
+        # No component hint means the user asked for the whole item. Component
+        # entries must not win the fallback scan by token-count luck, and
+        # blueprints only stay eligible when one was actually requested.
+        if not prepared.part_hint:
+            blocked = _COMPONENT_TOKENS
+            if not prepared.wants_blueprint:
+                blocked = blocked | _BLUEPRINT_TOKENS
+            if item_tokens & blocked:
+                score -= 10
 
         if prepared.wants_blueprint and "blueprint" in item_tokens:
             score += 6

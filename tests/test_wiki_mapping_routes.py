@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import sys
 from types import ModuleType, SimpleNamespace
 from pathlib import Path
@@ -17,7 +18,7 @@ services_package = ModuleType("services")
 services_package.__path__ = [str(Path(__file__).parents[1] / "services")]
 sys.modules.setdefault("services", services_package)
 
-from services import mapping_commands, wiki_commands  # noqa: E402
+from services import mapping_commands, no_prefix_routing, wiki_commands  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,7 +176,10 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     module("astrbot.core")
     module("astrbot.core.star")
     module("astrbot.core.star.filter")
-    module("astrbot.core.star.filter.command", GreedyStr=lambda: "")
+    class GreedyStr(str):
+        pass
+
+    module("astrbot.core.star.filter.command", GreedyStr=GreedyStr)
     module("astrbot.core.utils")
     module("astrbot.core.utils.astrbot_path", get_astrbot_temp_path=lambda: "")
 
@@ -210,7 +214,11 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     services.worldstate_commands = SimpleNamespace()
     empty_module("services.auto_push", AutoPushService=object)
     empty_module("services.fissure_sorting", fissure_tier_sort_enabled=lambda *_args: False)
-    empty_module("services.no_prefix_routing", has_explicit_at_component=lambda _components: False, no_prefix_skip_reason=lambda *_args, **_kwargs: None)
+    empty_module(
+        "services.no_prefix_routing",
+        has_explicit_at_component=no_prefix_routing.has_explicit_at_component,
+        no_prefix_skip_reason=no_prefix_routing.no_prefix_skip_reason,
+    )
     empty_module("services.subscriptions", SubscriptionService=object)
     empty_module("services.market", __path__=[])
     empty_module("services.market.pager", cmd_wfp=lambda **_kwargs: None)
@@ -229,16 +237,20 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
 
 
 class HandlerEvent(Event):
-    def __init__(self, admin: bool, text: str = ""):
+    def __init__(self, admin: bool, text: str = "", *, private: bool = False):
         super().__init__(admin)
         self.text = text
         self.is_at_or_wake_command = False
+        self.private = private
 
     def get_message_str(self) -> str:
         return self.text
 
     def get_messages(self):
         return []
+
+    def is_private_chat(self) -> bool:
+        return self.private
 
     def should_call_llm(self, _disabled: bool) -> None:
         pass
@@ -282,6 +294,34 @@ async def test_main_wfmap_handlers_execute_admin_gate_for_slash_and_no_prefix(mo
 
 
 @pytest.mark.asyncio
+async def test_main_wfmap_handler_keeps_the_complete_greedy_command_text(monkeypatch):
+    module = _load_main_handlers(monkeypatch)
+    mapper = Mapper()
+    plugin = _handler_plugin(module, mapper, WikiClient())
+
+    parameter = inspect.signature(module.WarframeHelperPlugin.wfmap).parameters["args"]
+    assert parameter.annotation is module.GreedyStr
+    assert parameter.default is inspect.Parameter.empty
+
+    event = HandlerEvent(True)
+    assert await _collect(
+        plugin.wfmap(event, "圣英p总图 圣英 PRIME 蓝图")
+    ) == [("plain", "已添加映射：圣英p总图 -> 圣英 PRIME 蓝图")]
+    assert mapper.upserts == [("圣英p总图", "圣英 PRIME 蓝图")]
+
+
+def test_main_wiki_mapping_command_family_uses_real_greedy_parameters(monkeypatch):
+    module = _load_main_handlers(monkeypatch)
+
+    for handler_name in ("wk", "wfmap", "wfmapdel", "wfmapq", "wf_add_alias"):
+        parameter = inspect.signature(
+            getattr(module.WarframeHelperPlugin, handler_name)
+        ).parameters["args"]
+        assert parameter.annotation is module.GreedyStr
+        assert parameter.default is inspect.Parameter.empty
+
+
+@pytest.mark.asyncio
 async def test_main_wk_handlers_execute_slash_and_no_prefix_and_yield_reply(monkeypatch):
     module = _load_main_handlers(monkeypatch)
     client = WikiClient()
@@ -297,6 +337,18 @@ async def test_main_wk_handlers_execute_slash_and_no_prefix_and_yield_reply(monk
         ("plain", "以下是“Volt”的 Wiki 页面：\nhttps://wiki.test/page")
     ]
     assert client.lookups == ["Volt Prime", "Volt"]
+
+
+@pytest.mark.asyncio
+async def test_private_wk_wake_command_is_not_replied_by_no_prefix_router(monkeypatch):
+    module = _load_main_handlers(monkeypatch)
+    client = WikiClient()
+    plugin = _handler_plugin(module, Mapper(), client)
+    event = HandlerEvent(False, "wk 圣英 prime", private=True)
+    event.is_at_or_wake_command = True
+
+    assert await _collect(plugin.no_prefix_command_router(event)) == []
+    assert client.lookups == []
 
 
 @pytest.mark.asyncio

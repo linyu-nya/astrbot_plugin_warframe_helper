@@ -12,6 +12,7 @@ def no_prefix_skip_reason(
     *,
     wake_or_command: bool,
     has_explicit_at: bool,
+    is_private: bool = False,
 ) -> str | None:
     """Return why a message must stay in AstrBot's regular command flow.
 
@@ -25,4 +26,6 @@ def no_prefix_skip_reason(
         return "empty_or_slash"
     if has_explicit_at:
         return "explicit_at"
+    if is_private and wake_or_command:
+        return "private_command_flow"
     return None

@@ -28,7 +28,7 @@ SOURCE_BASE = "base"
 SOURCE_RIVEN_WEAPON = "riven_weapon"
 SOURCE_USER = "user"
 
-DEFAULT_NICKNAME_REMOTE_URL = "https://gh-proxy.org/https://raw.githubusercontent.com/moemoli/astrbot_plugin_warframe_helper/refs/heads/master/assets/warframe_nicknames.default.json"
+DEFAULT_NICKNAME_REMOTE_URL = "https://gh-proxy.org/https://raw.githubusercontent.com/linyu-nya/astrbot_plugin_warframe_helper/refs/heads/master/assets/warframe_nicknames.default.json"
 
 _LEGACY_KEY_MAP: dict[str, str] = {
     "#sym:_BUILTIN_BASE_NICKNAMES": SYM_BASE_NICKNAMES,

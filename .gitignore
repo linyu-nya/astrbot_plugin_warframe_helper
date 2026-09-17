@@ -203,6 +203,8 @@ cython_debug/
 
 # Local Git worktrees
 .worktrees/
+.package-staging/
+.pytest-tmp-*/
 
 # Marimo
 marimo/_static/

@@ -47,3 +47,16 @@ def test_real_command_flows_are_still_skipped() -> None:
         )
         == "explicit_at"
     )
+
+
+def test_private_wake_command_stays_in_native_command_flow() -> None:
+    no_prefix_skip_reason = _load_skip_reason()
+    assert (
+        no_prefix_skip_reason(
+            "wk 圣英 prime",
+            wake_or_command=True,
+            has_explicit_at=False,
+            is_private=True,
+        )
+        == "private_command_flow"
+    )

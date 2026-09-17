@@ -2,6 +2,20 @@
 
 面向 AstrBot 的 Warframe（国际服）信息查询与交易助手。
 
+本仓库由 [linyu-nya](https://github.com/linyu-nya/astrbot_plugin_warframe_helper) 独立维护，后续开发与插件更新使用本仓库的 `master` 分支。
+基于 [moemoli 的原始项目](https://github.com/moemoli/astrbot_plugin_warframe_helper) 开发，保留原项目许可证与作者署名。
+
+## 开发与打包
+
+```bash
+python -m pip install -r requirements.txt -r requirements-test.txt
+python -m pytest -q
+python scripts/package_plugin.py --theme release
+```
+
+打包脚本在仓库同级目录生成 ZIP，安装入口文件位于压缩包根目录。
+虚拟环境、测试和开发文档不会进入安装包。
+
 ## 指令一览（部分支持平台参数）
 
 ### 世界状态

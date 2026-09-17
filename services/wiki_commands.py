@@ -3,6 +3,11 @@ from __future__ import annotations
 import inspect
 from urllib.parse import urlencode
 
+try:
+    from ..utils.text import normalize_wiki_keyword
+except ImportError:  # Compatibility for direct service-module loading.
+    from utils.text import normalize_wiki_keyword
+
 
 _HUIJI_SEARCH_ROOT = "https://warframe.huijiwiki.com/index.php"
 
@@ -46,15 +51,20 @@ async def wk(event, args, mapper, client):
     if not keyword:
         return await _reply(event, "用法：/wk 关键词")
 
-    resolved_keyword = keyword
+    resolved_keyword = normalize_wiki_keyword(keyword)
+    mapping_matched = False
     try:
         resolution = mapper.resolve_alias_only(keyword)
         if _field(resolution, "matched", False):
-            resolved_keyword = _field(
-                resolution,
-                "canonical_full_name",
-                keyword,
-            ) or keyword
+            mapping_matched = True
+            resolved_keyword = normalize_wiki_keyword(
+                _field(
+                    resolution,
+                    "canonical_full_name",
+                    keyword,
+                )
+                or keyword
+            )
     except Exception:
         pass
 
@@ -70,6 +80,17 @@ async def wk(event, args, mapper, client):
             event,
             f"以下是“{keyword}”的 Wiki 页面：\n{url}",
         )
+
+    if mapping_matched and status != "missing":
+        try:
+            page_url = client.build_page_url(resolved_keyword)
+        except Exception:
+            page_url = ""
+        if isinstance(page_url, str) and page_url.strip():
+            return await _reply(
+                event,
+                f"以下是“{keyword}”的 Wiki 页面：\n{page_url}",
+            )
 
     try:
         search_url = client.build_search_url(resolved_keyword)

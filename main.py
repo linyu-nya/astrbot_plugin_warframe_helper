@@ -58,7 +58,7 @@ from .utils.platforms import worldstate_platform_from_tokens
 QQ_OFFICIAL_WEBHOOK_PAGER_TEMPLATE_ID_DEFAULT = ""
 _DEBUG_LOGGING_ENABLED = False
 _RENDER_TEMPLATE_RESOLVER: Callable[[AstrMessageEvent], str | None] | None = None
-NICKNAME_DEFAULT_REMOTE_URL = "https://gh-proxy.org/https://raw.githubusercontent.com/moemoli/astrbot_plugin_warframe_helper/refs/heads/master/assets/warframe_nicknames.default.json"
+NICKNAME_DEFAULT_REMOTE_URL = "https://gh-proxy.org/https://raw.githubusercontent.com/linyu-nya/astrbot_plugin_warframe_helper/refs/heads/master/assets/warframe_nicknames.default.json"
 
 
 def set_debug_logging_enabled(enabled: bool) -> None:
@@ -779,6 +779,7 @@ class WarframeHelperPlugin(Star):
                 getattr(event, "is_at_or_wake_command", False)
             ),
             has_explicit_at=has_explicit_at_component(components),
+            is_private=event.is_private_chat(),
         )
         if skip_reason:
             self._debug_log("no_prefix_skip", event=event, reason=skip_reason)
@@ -1063,7 +1064,7 @@ class WarframeHelperPlugin(Star):
             yield output
 
     @filter.command("wk")
-    async def wk(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+    async def wk(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/wk")
         result = await wiki_commands.wk(
             event, split_tokens(str(args)), self.term_mapper, self.huiji_wiki_client
@@ -1072,30 +1073,32 @@ class WarframeHelperPlugin(Star):
             yield result
 
     @filter.command("wfmap")
-    async def wfmap(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+    async def wfmap(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/wfmap")
-        result = await mapping_commands.wfmap(event, split_tokens(str(args)), self.term_mapper)
+        result = await mapping_commands.wfmap(
+            event,
+            split_tokens(str(args)),
+            self.term_mapper,
+        )
         if result is not None:
             yield result
 
     @filter.command("wfmapdel")
-    async def wfmapdel(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+    async def wfmapdel(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/wfmapdel")
         result = await mapping_commands.wfmapdel(event, split_tokens(str(args)), self.term_mapper)
         if result is not None:
             yield result
 
     @filter.command("wfmapq")
-    async def wfmapq(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+    async def wfmapq(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/wfmapq")
         result = await mapping_commands.wfmapq(event, split_tokens(str(args)), self.term_mapper)
         if result is not None:
             yield result
 
     @filter.command("简称补充")
-    async def wf_add_alias(
-        self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
-    ):
+    async def wf_add_alias(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/简称补充")
         result = await mapping_commands.compatible_alias_add(
             event, split_tokens(str(args)), self.term_mapper

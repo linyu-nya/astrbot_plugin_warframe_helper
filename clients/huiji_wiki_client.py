@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 
 import aiohttp
 
@@ -76,32 +76,168 @@ class HuijiWikiClient:
                 timeout=self._timeout,
                 trust_env=True,
             ) as session:
-                request_kwargs = request_kwargs_for_url(self.api_url)
-                async with session.get(
-                    self.api_url,
+                api_result, may_fallback = await self._lookup_via_api(
+                    session,
                     params=params,
                     headers=headers,
-                    **request_kwargs,
-                ) as response:
-                    if response.status != 200:
-                        return self._unavailable()
-                    if not _is_application_json(response.headers.get("Content-Type")):
-                        return self._unavailable()
-
-                    body = await _read_limited_body(
-                        response,
-                        max_bytes=self._max_response_bytes,
-                    )
-                    if body is None:
-                        return self._unavailable()
+                )
+                if api_result.status is not HuijiWikiStatus.UNAVAILABLE:
+                    return api_result
+                if not may_fallback:
+                    return api_result
+                search_result, may_probe_direct = await self._lookup_via_search_redirect(
+                    session,
+                    title=title,
+                    headers=headers,
+                )
+                if search_result.status is HuijiWikiStatus.FOUND:
+                    return search_result
+                if not may_probe_direct:
+                    return search_result
+                return await self._lookup_via_direct_page(
+                    session,
+                    title=title,
+                    headers=headers,
+                )
         except Exception:
             return self._unavailable()
+
+    async def _lookup_via_api(
+        self,
+        session: Any,
+        *,
+        params: dict[str, str | int],
+        headers: dict[str, str],
+    ) -> tuple[HuijiWikiResult, bool]:
+        try:
+            request_kwargs = request_kwargs_for_url(self.api_url)
+            async with session.get(
+                self.api_url,
+                params=params,
+                headers=headers,
+                **request_kwargs,
+            ) as response:
+                if response.status != 200:
+                    return self._unavailable(), True
+                if not _is_application_json(response.headers.get("Content-Type")):
+                    return self._unavailable(), False
+
+                body = await _read_limited_body(
+                    response,
+                    max_bytes=self._max_response_bytes,
+                )
+                if body is None:
+                    return self._unavailable(), False
+        except Exception:
+            return self._unavailable(), True
 
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
+            return self._unavailable(), False
+        return self._parse_payload(payload), False
+
+    async def _lookup_via_search_redirect(
+        self,
+        session: Any,
+        *,
+        title: str,
+        headers: dict[str, str],
+    ) -> tuple[HuijiWikiResult, bool]:
+        search_url = self.build_search_url(title)
+        html_headers = {
+            **headers,
+            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        }
+        request_kwargs = request_kwargs_for_url(search_url)
+        try:
+            async with session.get(
+                search_url,
+                headers=html_headers,
+                allow_redirects=False,
+                **request_kwargs,
+            ) as response:
+                if response.status == 200:
+                    response_url = str(getattr(response, "url", "") or "")
+                    if _is_exact_page_url(
+                        response_url,
+                        expected_hostname=self._site_hostname,
+                    ):
+                        return (
+                            HuijiWikiResult(
+                                HuijiWikiStatus.FOUND,
+                                title=title,
+                                url=response_url,
+                            ),
+                            False,
+                        )
+                    return self._unavailable(), True
+                if response.status not in {301, 302, 303, 307, 308}:
+                    may_probe_direct = response.status in {403, 429, 500, 502, 503}
+                    return self._unavailable(), may_probe_direct
+                location = response.headers.get("Location")
+                if not isinstance(location, str) or not location.strip():
+                    return self._unavailable(), False
+        except Exception:
+            return self._unavailable(), True
+
+        page_url = urljoin(search_url, location.strip())
+        if not _is_exact_page_url(
+            page_url,
+            expected_hostname=self._site_hostname,
+        ):
+            return self._unavailable(), False
+        return (
+            HuijiWikiResult(HuijiWikiStatus.FOUND, title=title, url=page_url),
+            False,
+        )
+
+    async def _lookup_via_direct_page(
+        self,
+        session: Any,
+        *,
+        title: str,
+        headers: dict[str, str],
+    ) -> HuijiWikiResult:
+        direct_url = self.build_page_url(title)
+        if not direct_url:
             return self._unavailable()
-        return self._parse_payload(payload)
+        html_headers = {
+            **headers,
+            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        }
+        request_kwargs = request_kwargs_for_url(direct_url)
+        async with session.get(
+            direct_url,
+            headers=html_headers,
+            allow_redirects=False,
+            **request_kwargs,
+        ) as response:
+            if response.status == 200:
+                response_url = str(getattr(response, "url", "") or direct_url)
+                if _is_exact_page_url(
+                    response_url,
+                    expected_hostname=self._site_hostname,
+                ):
+                    return HuijiWikiResult(
+                        HuijiWikiStatus.FOUND,
+                        title=title,
+                        url=response_url,
+                    )
+                return self._unavailable()
+            if response.status not in {301, 302, 303, 307, 308}:
+                return self._unavailable()
+            location = response.headers.get("Location")
+            if not isinstance(location, str) or not location.strip():
+                return self._unavailable()
+
+        page_url = urljoin(direct_url, location.strip())
+        if not _is_exact_page_url(
+            page_url,
+            expected_hostname=self._site_hostname,
+        ):
+            return self._unavailable()
+        return HuijiWikiResult(HuijiWikiStatus.FOUND, title=title, url=page_url)
 
     def build_search_url(self, keyword: str) -> str:
         query = urlencode(
@@ -113,6 +249,12 @@ class HuijiWikiClient:
             }
         )
         return f"{self._site_root}/index.php?{query}"
+
+    def build_page_url(self, keyword: str) -> str:
+        page_title = "_".join(str(keyword or "").split())
+        if not page_title:
+            return ""
+        return f"{self._site_root}/wiki/{quote(page_title, safe='_')}"
 
     def _parse_payload(self, payload: Any) -> HuijiWikiResult:
         if not isinstance(payload, dict) or "error" in payload:
@@ -194,6 +336,18 @@ def _is_expected_page_url(value: str, *, expected_hostname: str) -> bool:
         and parsed.password is None
         and port in {None, 443}
     )
+
+
+def _is_exact_page_url(value: str, *, expected_hostname: str) -> bool:
+    if not _is_expected_page_url(value, expected_hostname=expected_hostname):
+        return False
+    parsed = urlsplit(value)
+    if parsed.path.startswith("/wiki/") and parsed.path != "/wiki/":
+        return True
+    if parsed.path != "/index.php":
+        return False
+    titles = parse_qs(parsed.query).get("title", [])
+    return bool(titles) and all(title.casefold() != "特殊:搜索" for title in titles)
 
 
 async def _read_limited_body(response: Any, *, max_bytes: int) -> bytes | None:

@@ -133,6 +133,10 @@ async def cmd_wm(
             query = m_sfx.group(1)
             mod_rank_level = int(m_sfx.group(2))
 
+    # Tokens that do not match any known option belong to the item name.
+    # Dropping them silently made `/wm 川流不息 Prime` query 川流不息 (Flow)
+    # and `/wm 悦音 枪机` query 悦音 (an arbitrary part).
+    extra_item_tokens: list[str] = []
     for t in rest:
         t_norm = str(t).strip().lower()
         if not t_norm:
@@ -162,6 +166,11 @@ async def cmd_wm(
         if re.fullmatch(r"[a-z]{2}([\-_][a-z]{2,8})?", t_norm):
             language = t_norm.replace("_", "-")
             continue
+
+        extra_item_tokens.append(str(t).strip())
+
+    if extra_item_tokens:
+        query = " ".join([query, *extra_item_tokens]).strip()
 
     item = await term_mapper.resolve(query)
     if not item:
