@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -53,3 +54,17 @@ async def test_retrieval_evaluation_reports_topic_recall_separately_from_chat_ca
     assert result["positive_hits"] == 1 and result["positive_count"] == 2
     assert result["chat_candidates"] == 1 and result["errors"] == 1
     assert len(result["details"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_expanded_evaluation_does_not_drop_trailing_chat_cases():
+    module = load_module()
+    cases = json.loads((Path(__file__).parents[1] / "assets/knowledge/evaluation_questions_zh.json").read_text(encoding="utf-8"))
+
+    class Service:
+        async def retrieve(self, query, *, max_chunks):
+            return [{"doc_name": "无关候选"}]
+
+    result = await module.evaluate_retrieval(Service(), cases)
+    assert len(result["details"]) == len(cases) == 45
+    assert result["positive_count"] == 40 and result["chat_candidates"] == 5

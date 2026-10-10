@@ -48,6 +48,24 @@ async def test_pack_import_is_idempotent_and_protects_admin_edits(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_expanded_pack_upgrades_managed_topics_without_duplicates(tmp_path):
+    pack = json.loads((Path(__file__).parents[1] / "assets/knowledge/starter_topics_zh.json").read_text(encoding="utf-8"))
+    service = KnowledgeService(FakeManager(FakeKB()), "Warframe", tmp_path / "entries.json")
+    old = {**pack, "version": "2026-10-10.1", "documents": [
+        {**doc, "content": "旧版概述。"} for doc in pack["documents"][:25]
+    ]}
+    await service.import_pack(old, "admin")
+    edited = pack["documents"][0]
+    await service.upsert_topic(edited["title"], "管理员自己的正文。", "", "admin")
+    report = await service.import_pack(pack, "admin")
+    assert report == {"added": 15, "updated": 24, "skipped": 1, "failed": 0, "pending": 0}
+    assert len(service.list_entries()) == 40
+    assert len(service.kb_manager.kb.docs) == 40
+    assert service.get(edited["title"]).answer == "管理员自己的正文。"
+    assert (await service.import_pack(pack, "admin"))["skipped"] == 40
+
+
+@pytest.mark.asyncio
 async def test_bulk_markdown_import_extracts_metadata_and_reports_bad_files(tmp_path):
     service = KnowledgeService(FakeManager(FakeKB()), "Warframe", tmp_path / "entries.json")
     folder = tmp_path / "knowledge_import"

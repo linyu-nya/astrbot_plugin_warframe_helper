@@ -38,7 +38,7 @@ class KnowledgeRagMonitor:
 async def evaluate_retrieval(service, cases: list[dict], *, timeout_sec=5.0, record=None) -> dict:
     result = {"positive_count": 0, "positive_hits": 0, "chat_candidates": 0, "errors": 0, "details": []}
     latencies = []
-    for case in cases[:40]:
+    for case in cases[:50]:
         expected = set(case.get("expected_titles", []))
         result["positive_count"] += bool(expected)
         started = time.perf_counter()
