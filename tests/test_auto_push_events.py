@@ -11,6 +11,27 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "astrbot_plugin_warframe_helper"
 
 
+@pytest.mark.asyncio
+async def test_bounty_push_signature_ignores_countdown(push_events_module, worldstate_module):
+    from datetime import datetime, timedelta, timezone
+    from dataclasses import replace
+    from types import SimpleNamespace
+    job = worldstate_module.SyndicateJob(node="110-115级", mission_type="赏金", eta="1小时",
+        title="歼灭", task_type="歼灭", min_level=110, max_level=115, objective="争分夺秒")
+    board = worldstate_module.SyndicateInfo(name="科维兽", tag="EntratiLabSyndicate", eta="1小时",
+        jobs=(job,), expiry_utc=datetime.now(timezone.utc) + timedelta(hours=1))
+    async def fetch(**kwargs):
+        return [board]
+    client = SimpleNamespace(fetch_syndicates=fetch)
+    first = await push_events_module.collect_push_events(client)
+    board = replace(board, jobs=(replace(job, eta="59分"),))
+    second = await push_events_module.collect_push_events(client)
+    assert len(first) == len(second) == 1
+    assert first[0].kind == "bounty"
+    assert first[0].signature == second[0].signature
+    assert "59分" in second[0].text
+
+
 @pytest.fixture
 def push_events_module(worldstate_module, monkeypatch: pytest.MonkeyPatch):
     module_name = f"{PACKAGE}.services.push_events"

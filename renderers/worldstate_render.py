@@ -38,6 +38,7 @@ def _build_worldstate_html(
     rows: list[WorldstateRow],
     reward_rows: list[WorldstateRow] | None,
     accent: tuple[int, int, int, int],
+    template_filename: str = "status_list.html",
 ) -> str:
     row_items: list[dict[str, str]] = []
     for row in rows:
@@ -74,7 +75,7 @@ def _build_worldstate_html(
         }
     }
 
-    html = load_html_template(filename="status_list.html", context=context)
+    html = load_html_template(filename=template_filename, context=context)
     if html:
         return html
 
@@ -90,6 +91,7 @@ async def render_worldstate_rows_image_to_file(
     reward_rows: list[WorldstateRow] | None = None,
     accent: tuple[int, int, int, int] = (79, 70, 229, 255),
     render_timeout_sec: float = 6.0,
+    template_filename: str = "status_list.html",
 ) -> RenderedImage | None:
     if not rows and not reward_rows:
         return None
@@ -100,6 +102,7 @@ async def render_worldstate_rows_image_to_file(
         rows=rows,
         reward_rows=reward_rows,
         accent=accent,
+        template_filename=template_filename,
     )
 
     timeout_sec = max(1.0, float(render_timeout_sec))

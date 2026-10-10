@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 980px; color: #f2f7f5; font-family: "Noto Sans CJK SC", "Noto Sans SC", sans-serif; }
+    body { padding: 30px; background: #14232b; }
+    .header { padding: 26px 30px; background: rgba(14, 28, 35, .83); border: 1px solid rgba(211,234,222,.2); border-radius: 16px; margin-bottom: 20px; }
+    .title { font-size: 38px; font-weight: 700; line-height: 1.3; }
+    .header-line { font-size: 19px; color: #c1d2cf; margin-top: 6px; }
+    .rows { display: flex; flex-direction: column; gap: 12px; }
+    .row-card { background: rgba(14, 28, 35, .83); border: 1px solid rgba(211,234,222,.2); border-radius: 14px; padding: 19px 24px; }
+    .row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; margin-bottom: 12px; }
+    .row-title { color: #f2f7f5; font-size: 24px; font-weight: 700; }
+    .date-hint { color: #99b6ad; font-size: 15px; white-space: nowrap; }
+    .entry { display: flex; gap: 14px; align-items: flex-start; border-top: 1px solid rgba(211,234,222,.13); padding-top: 9px; margin-top: 9px; font-size: 18px; line-height: 1.52; }
+    .entry:first-child { border: 0; padding-top: 0; margin-top: 0; }
+    .kind { flex: none; width: 110px; color: #87cfbb; font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+    .kind.reward { color: #f2c06d; } .kind.upgrade { color: #9cc6e8; }
+    .detail { color: #e4edea; min-width: 0; overflow-wrap: anywhere; }
+  </style>
+  {% if render_theme and render_theme.enabled %}<style>{{ render_theme.css | safe }}</style>{% endif %}
+</head>
+<body{% if render_theme and render_theme.enabled %} class="wf-custom-background"{% endif %}>
+  <header class="header">
+    <div class="title">{{ page.title }}</div>
+    {% for line in page.header_lines %}<div class="header-line">{{ line }}</div>{% endfor %}
+  </header>
+  <main class="rows">
+  {% for row in page.rows %}
+    <section class="row-card">
+      <div class="row-top"><div class="row-title">{{ row.title[:4] }}年{{ row.title[5:7] }}月{{ row.title[8:10] }}日</div></div>
+      {% for line in row.subtitle.split('\n') %}
+      {% set parts = line.split(' · ', 1) %}
+      <div class="entry">
+        <span class="kind{% if parts[0] == '奖励选项' %} reward{% elif parts[0] == '覆写选项' %} upgrade{% endif %}">{{ parts[0] }}</span>
+        <span class="detail">{{ parts[1] if parts | length > 1 else line }}</span>
+      </div>
+      {% endfor %}
+    </section>
+  {% endfor %}
+  </main>
+</body>
+</html>

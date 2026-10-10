@@ -29,6 +29,7 @@ _HTML_RENDER_CONNECT_TIMEOUT_SEC = max(1, _env_int("WF_HTML_RENDER_CONNECT_TIMEO
 _HTML_RENDER_LAUNCH_TIMEOUT_SEC = max(2, _env_int("WF_HTML_RENDER_LAUNCH_TIMEOUT", 8))
 _HTML_RENDER_PAGE_TIMEOUT_SEC = max(2, _env_int("WF_HTML_RENDER_PAGE_TIMEOUT", 6))
 _IMAGE_CACHE_DIR_OVERRIDE = ""
+_IMAGE_FORMAT = "webp"
 
 _PLAYWRIGHT_INSTALL_LOCK = asyncio.Lock()
 _PLAYWRIGHT_INSTALL_DONE = False
@@ -70,6 +71,33 @@ def configure_image_cache(
 
     if cache_dir is not None:
         _IMAGE_CACHE_DIR_OVERRIDE = str(cache_dir or "").strip()
+
+
+def configure_image_format(value: str | None) -> None:
+    global _IMAGE_FORMAT
+    _IMAGE_FORMAT = "png" if str(value or "").strip().lower() == "png" else "webp"
+
+
+def _prefer_lossless_webp(path: Path) -> Path:
+    if _IMAGE_FORMAT == "png":
+        return path
+    target = path.with_suffix(".webp")
+    try:
+        from PIL import Image, features
+
+        if not features.check("webp"):
+            return path
+        with Image.open(path) as source:
+            source.save(target, "WEBP", lossless=True, method=6)
+        if target.stat().st_size >= path.stat().st_size:
+            target.unlink(missing_ok=True)
+            return path
+        path.unlink()
+        return target
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        logger.warning(f"lossless WebP conversion failed, keeping PNG: {exc!s}")
+        return path
 
 
 def _get_image_cache_dir() -> Path:
@@ -437,7 +465,7 @@ async def _render_html_to_png_file_impl(
             out_path=out_path,
         )
         if rendered:
-            return rendered
+            return str(_prefer_lossless_webp(Path(rendered)))
     except Exception as exc:
         logger.warning(f"Failed to render html snapshot by local playwright: {exc!s}")
     finally:

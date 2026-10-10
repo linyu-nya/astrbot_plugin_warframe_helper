@@ -1,0 +1,32 @@
+[
+  {
+    "question": "初始战甲选错了还能换吗？",
+    "answer": "可以。初始选择不是永久的，后续可以通过建造或购买获得其他战甲。",
+    "source": "https://www.warframe.com/zh-hans/game/quickstart"
+  },
+  {
+    "question": "Mod 有什么用？",
+    "answer": "Mod 用来强化战甲、武器等装备。安装并升级 Mod 是提升战斗能力的重要方式。",
+    "source": "https://www.warframe.com/zh-hans/news/new-player-guide"
+  },
+  {
+    "question": "如何解锁更多星球和系列任务？",
+    "answer": "推进星图、完成接合点要求，可以解锁更多星球、任务节点和系列任务。",
+    "source": "https://www.warframe.com/zh-hans/news/new-player-guide"
+  },
+  {
+    "question": "开放世界集团声望怎么获得？",
+    "answer": "完成开放世界的赏金任务可以获得对应集团声望，再用声望向集团购买奖励。",
+    "source": "https://www.warframe.com/zh-hans/news/new-player-guide"
+  },
+  {
+    "question": "Mod 槽位的极性有什么用？",
+    "answer": "安装 Mod 时，尽量让 Mod 的极性符号与槽位极性匹配，这有助于更有效地使用装备容量。",
+    "source": "https://www.warframe.com/zh-hans/news/mod-ja"
+  },
+  {
+    "question": "完成 Natah 后怎么开启第二场梦？",
+    "answer": "继续完成天王星上的海王星接合点要求并击败接合点魅影，即可解锁后续的《第二场梦》。",
+    "source": "https://www.warframe.com/zh-hans/guides/quests/natah"
+  }
+]

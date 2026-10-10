@@ -155,6 +155,8 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     class Filter:
         command = staticmethod(decorator)
         regex = staticmethod(decorator)
+        on_llm_request = staticmethod(decorator)
+        on_llm_response = staticmethod(decorator)
 
         @staticmethod
         def command_group(*_args, **_kwargs):
@@ -168,7 +170,10 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
         pass
 
     astrbot = module("astrbot")
-    api = module("astrbot.api", logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None))
+    async def session_get(*_args, **_kwargs):
+        return {}
+    log = lambda *_args, **_kwargs: None
+    api = module("astrbot.api", logger=SimpleNamespace(debug=log, info=log, warning=log, exception=log), sp=SimpleNamespace(session_get=session_get))
     astrbot.api = api
     module("astrbot.api.event", AstrMessageEvent=object, filter=Filter())
     module("astrbot.api.message_components", Image=object, Plain=object)
@@ -181,7 +186,14 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
 
     module("astrbot.core.star.filter.command", GreedyStr=GreedyStr)
     module("astrbot.core.utils")
-    module("astrbot.core.utils.astrbot_path", get_astrbot_temp_path=lambda: "")
+    module("astrbot.core.agent")
+    class TextPart:
+        def __init__(self, text):
+            self.text = text
+        def mark_as_temp(self):
+            return self
+    module("astrbot.core.agent.message", TextPart=TextPart)
+    module("astrbot.core.utils.astrbot_path", get_astrbot_temp_path=lambda: "", get_astrbot_plugin_data_path=lambda: "")
 
     def empty_module(name: str, **attrs):
         return module(f"{package}.{name}", **attrs)
@@ -204,7 +216,7 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     empty_module("mappers.riven_stats_mapping", WarframeRivenStatMapper=object)
     empty_module("mappers.term_mapping", WarframeTermMapper=object)
     empty_module("renderers", __path__=[])
-    empty_module("renderers.html_snapshot", configure_image_cache=lambda **_kwargs: None, start_playwright_runtime_prepare=lambda: None)
+    empty_module("renderers.html_snapshot", configure_image_cache=lambda **_kwargs: None, configure_image_format=lambda _value: None, start_playwright_runtime_prepare=lambda: None)
     empty_module("renderers.background_runtime", BackgroundThemeRuntime=object)
     empty_module("renderers.template_loader", has_render_template_name=lambda *_args: False, list_available_render_template_names=lambda: [], set_current_render_command=lambda *_args: None, set_current_render_template_name=lambda *_args: None, set_render_template_name=lambda *_args: None, set_render_theme_resolver=lambda *_args: None)
     empty_module("renderers.worldstate_render", WorldstateRow=object, render_worldstate_rows_image_to_file=lambda **_kwargs: None)
@@ -213,6 +225,8 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     services.wiki_commands = wiki_commands
     services.worldstate_commands = SimpleNamespace()
     empty_module("services.auto_push", AutoPushService=object)
+    empty_module("services.knowledge_base", KnowledgeService=object, KnowledgeUnavailable=RuntimeError, addressed_knowledge_question=lambda _event: None, parse_knowledge_command=lambda _raw: None)
+    empty_module("services.knowledge_rag", prepare_rag=lambda *_args, **_kwargs: None, decorate_answer=lambda _event, text: text)
     empty_module("services.fissure_sorting", fissure_tier_sort_enabled=lambda *_args: False)
     empty_module(
         "services.no_prefix_routing",
@@ -275,6 +289,123 @@ async def _collect(generator):
 
 
 @pytest.mark.asyncio
+async def test_private_rag_preserves_native_ai_persona_and_web_tools(monkeypatch):
+    module = _load_main_handlers(monkeypatch)
+    spec = importlib.util.spec_from_file_location("wf_rag_integration", ROOT / "services" / "knowledge_rag.py")
+    rag = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rag)
+    module.prepare_rag = rag.prepare_rag
+    module.decorate_answer = rag.decorate_answer
+    module.addressed_knowledge_question = lambda event: (
+        event.text if event.private and event.text and not event.text.startswith("/") else None
+    )
+    plugin = _handler_plugin(module, Mapper(), WikiClient())
+    plugin.config = {"knowledge_base": {"enabled": True, "private_enabled": True}}
+    plugin.context = SimpleNamespace(get_config=lambda **_kwargs: {})
+
+    class KnowledgeService:
+        async def retrieve(self, question, *, max_chunks):
+            return [{"doc_name": "新手资料", "content": "可以获取其他战甲。", "source": "https://www.warframe.com/guide"}]
+
+    class PrivateEvent(HandlerEvent):
+        def __init__(self, text):
+            super().__init__(False, text, private=True)
+            self.llm_calls = []
+            self.extra = {}
+            self.unified_msg_origin = "qq:FriendMessage:123"
+
+        def get_extra(self, key, default=None):
+            return self.extra.get(key, default)
+
+        def set_extra(self, key, value):
+            self.extra[key] = value
+
+        def should_call_llm(self, value):
+            self.llm_calls.append(value)
+
+    plugin._get_knowledge_service = lambda: KnowledgeService()
+    answered = PrivateEvent("初始战甲选错了还能换吗？")
+    req = SimpleNamespace(prompt=answered.text, system_prompt="琴音人格", contexts=[], func_tool=object(), extra_user_content_parts=[])
+    web_tools = req.func_tool
+    assert await plugin.wf_knowledge_rag_request(answered, req) is None
+    assert req.system_prompt == "琴音人格" and req.func_tool is web_tools
+    assert len(req.extra_user_content_parts) == 1 and answered.llm_calls == []
+    resp = SimpleNamespace(completion_text="当然可以呀。[[WFKB:1]]")
+    await plugin.wf_knowledge_rag_response(answered, resp)
+    assert "当然可以呀。" in resp.completion_text and "知识库参考" in resp.completion_text
+
+    untouched = SimpleNamespace(prompt="/wk 战甲", extra_user_content_parts=[])
+    await plugin.wf_knowledge_rag_request(PrivateEvent("/wk 战甲"), untouched)
+    assert untouched.extra_user_content_parts == []
+    plugin.config["knowledge_base"]["private_enabled"] = False
+    await plugin.wf_knowledge_rag_request(PrivateEvent("未知问题"), untouched)
+    assert untouched.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("command", "method", "kind"), [
+    ("爬塔", "wf_descent", "descent"), ("日历", "wf_calendar", "calendar"),
+    ("本周灵化", "wf_incarnon", "incarnon"),
+])
+async def test_weekly_queries_native_and_plain(monkeypatch, command, method, kind):
+    module = _load_main_handlers(monkeypatch)
+    plugin = _handler_plugin(module, Mapper(), WikiClient())
+    plugin.worldstate_client = object()
+    calls = []
+
+    async def query(**kwargs):
+        calls.append((kwargs["kind"], kwargs["raw_args"]))
+        return "ok"
+
+    async def output(result):
+        yield result
+
+    module.worldstate_commands.cmd_weekly_activity = query
+    plugin._yield_result_and_cleanup_image = output
+    event = HandlerEvent(False, command + " pc")
+    assert await _collect(getattr(plugin, method)(event, "pc")) == ["ok"]
+    assert await _collect(plugin.no_prefix_command_router(event)) == ["ok"]
+    assert calls == [(kind, "pc"), (kind, "pc")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("command", "method", "region"), [
+    ("地球赏金", "wf_cetus_bounty", "希图斯"),
+    ("金星赏金", "wf_venus_bounty", "金星"),
+    ("火卫二赏金", "wf_deimos_bounty", "火卫二"),
+    ("扎里曼赏金", "wf_zariman_bounty", "扎里曼"),
+    ("圣所赏金", "wf_cavia_bounty", "圣所"),
+    ("1999赏金", "wf_hex_bounty", "1999"),
+])
+async def test_bounty_shortcuts_native_and_no_prefix(monkeypatch, command, method, region):
+    module = _load_main_handlers(monkeypatch)
+    plugin = _handler_plugin(module, Mapper(), WikiClient())
+    plugin.worldstate_client = object()
+    calls = []
+
+    async def command_impl(**kwargs):
+        calls.append(kwargs["raw_args"])
+        return "result"
+
+    async def markdown(**kwargs):
+        return False
+
+    async def output(result):
+        yield result
+
+    module.worldstate_commands.cmd_bounties = command_impl
+    plugin._try_send_qq_markdown_for_result = markdown
+    plugin._yield_result_and_cleanup_image = output
+    event = HandlerEvent(False, command + " pc")
+    assert await _collect(getattr(plugin, method)(event, "pc")) == ["result"]
+    assert await _collect(plugin.no_prefix_command_router(event)) == ["result"]
+    assert calls == [region + " pc", region + " pc"]
+    parameter = inspect.signature(getattr(module.WarframeHelperPlugin, method)).parameters["args"]
+    assert parameter.annotation is module.GreedyStr
+    assert parameter.default is inspect.Parameter.empty
+
+
+@pytest.mark.asyncio
 async def test_main_wfmap_handlers_execute_admin_gate_for_slash_and_no_prefix(monkeypatch):
     module = _load_main_handlers(monkeypatch)
     mapper = Mapper()
@@ -291,6 +422,23 @@ async def test_main_wfmap_handlers_execute_admin_gate_for_slash_and_no_prefix(mo
         ("plain", "已添加映射：猴p -> Wukong Prime")
     ]
     assert mapper.upserts == [("猴p", "Wukong Prime")]
+
+
+@pytest.mark.asyncio
+async def test_translate_command_works_with_and_without_prefix(monkeypatch):
+    module = _load_main_handlers(monkeypatch)
+    class TranslationMapper:
+        def resolve_alias_only(self, query):
+            return {"matched": True, "canonical_full_name": "Revenant Prime"}
+    plugin = _handler_plugin(module, TranslationMapper(), WikiClient())
+    slash = HandlerEvent(False)
+    plain = HandlerEvent(False, "翻译 夜灵p")
+    assert await _collect(plugin.wf_translate(slash, "夜灵p")) == [
+        ("plain", "【夜灵p】=> Revenant Prime")
+    ]
+    assert await _collect(plugin.no_prefix_command_router(plain)) == [
+        ("plain", "【夜灵p】=> Revenant Prime")
+    ]
 
 
 @pytest.mark.asyncio

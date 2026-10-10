@@ -16,7 +16,7 @@ services_package = ModuleType("services")
 services_package.__path__ = [str(Path(__file__).parents[1] / "services")]
 sys.modules.setdefault("services", services_package)
 
-from services.wiki_commands import wk
+from services.wiki_commands import wk, translate
 
 
 @dataclass
@@ -88,6 +88,27 @@ class FakeClient:
 
 def _found(url: str = "https://wiki.test/wiki/Volt"):
     return HuijiWikiResult(HuijiWikiStatus.FOUND, url=url)
+
+
+@pytest.mark.asyncio
+async def test_translate_alias_prime_and_reverse_chinese_name(tmp_path):
+    from test_term_mapping_aliases import _mapper
+    mapper, _, _, _ = _mapper(tmp_path, base={"夜灵": "Revenant", "夜灵甲": "Revenant"})
+    event = FakeEvent(asynchronous=True)
+    await translate(event, ["夜灵p"], mapper)
+    await translate(event, ["Revenant", "Prime"], mapper)
+    assert event.messages == [
+        "【夜灵p】=> Revenant Prime",
+        "【Revenant Prime】=> 夜灵 Prime",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_translate_unknown_and_usage():
+    event = FakeEvent(asynchronous=True)
+    await translate(event, [], FakeMapper())
+    await translate(event, ["完全未知"], FakeMapper())
+    assert event.messages == ["用法：/翻译 关键词", "未找到“完全未知”的本地翻译映射。"]
 
 
 @pytest.mark.asyncio

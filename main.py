@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -10,7 +11,10 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star
 from astrbot.core.star.filter.command import GreedyStr
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_plugin_data_path,
+    get_astrbot_temp_path,
+)
 
 from .clients.huiji_wiki_client import HuijiWikiClient
 from .clients.market_client import WarframeMarketClient
@@ -27,6 +31,7 @@ from .mappers.riven_stats_mapping import WarframeRivenStatMapper
 from .mappers.term_mapping import WarframeTermMapper
 from .renderers.html_snapshot import (
     configure_image_cache,
+    configure_image_format,
     start_playwright_runtime_prepare,
 )
 from .renderers.background_runtime import BackgroundThemeRuntime
@@ -45,6 +50,13 @@ from .renderers.worldstate_render import (
 from .services import mapping_commands, wiki_commands, worldstate_commands
 from .services.auto_push import AutoPushService
 from .services.fissure_sorting import fissure_tier_sort_enabled
+from .services.knowledge_base import (
+    KnowledgeService,
+    KnowledgeUnavailable,
+    addressed_knowledge_question,
+    parse_knowledge_command,
+)
+from .services.knowledge_rag import decorate_answer, prepare_rag
 from .services.market.pager import cmd_wfp
 from .services.market.wm import cmd_wm
 from .services.market.wmr import cmd_wmr
@@ -119,6 +131,7 @@ def _safe_disable_llm(event: AstrMessageEvent, *, reason: str) -> None:
         )
 
     try:
+        # AstrBot interprets True as suppressing its default AI request.
         event.should_call_llm(True)
     except Exception as exc:
         logger.debug(f"Failed to disable LLM for {reason}: {exc!s}")
@@ -268,11 +281,11 @@ def _clear_plugin_image_cache() -> dict[str, int | str]:
             return False
         if n == "wf_helper_blank_1x1.png":
             return True
-        if n.startswith("wf_worldstate_") and n.endswith(".png"):
+        if n.startswith("wf_worldstate_") and n.endswith((".png", ".webp")):
             return True
-        if n.startswith("wmr_") and n.endswith(".png"):
+        if n.startswith("wmr_") and n.endswith((".png", ".webp")):
             return True
-        if n.startswith("wm_") and n.endswith(".png"):
+        if n.startswith("wm_") and n.endswith((".png", ".webp")):
             return True
         return False
 
@@ -403,11 +416,13 @@ class WarframeHelperPlugin(Star):
         set_render_template_resolver(self._resolve_session_template)
         self._enable_no_prefix_commands = _parse_enable_no_prefix_commands(self.config)
         self._no_prefix_head_regex: re.Pattern[str] | None = None
+        self._knowledge_service: KnowledgeService | None = None
 
         image_cache_dir = _parse_image_cache_config(self.config)
         configure_image_cache(
             cache_dir=image_cache_dir,
         )
+        configure_image_format(self.config.get("render_image_format", "webp"))
 
         _apply_proxy_config(self.config)
 
@@ -614,9 +629,9 @@ class WarframeHelperPlugin(Star):
         filename = path.name.lower()
         is_plugin_generated = (
             filename == "wf_helper_blank_1x1.png"
-            or (filename.startswith("wf_worldstate_") and filename.endswith(".png"))
-            or (filename.startswith("wm_") and filename.endswith(".png"))
-            or (filename.startswith("wmr_") and filename.endswith(".png"))
+            or (filename.startswith("wf_worldstate_") and filename.endswith((".png", ".webp")))
+            or (filename.startswith("wm_") and filename.endswith((".png", ".webp")))
+            or (filename.startswith("wmr_") and filename.endswith((".png", ".webp")))
         )
         if not is_plugin_generated:
             return
@@ -644,7 +659,9 @@ class WarframeHelperPlugin(Star):
             "wfmap": self.wfmap,
             "wfmapdel": self.wfmapdel,
             "wfmapq": self.wfmapq,
+            "wf知识": self.wf_knowledge,
             "wk": self.wk,
+            "翻译": self.wf_translate,
             "模板": self.wf_template,
             "wf模板": self.wf_template,
             "渲染模板": self.wf_template,
@@ -690,6 +707,20 @@ class WarframeHelperPlugin(Star):
             "赏金": self.wf_bounty,
             "bounty": self.wf_bounty,
             "希图斯赏金": self.wf_cetus_bounty,
+            "地球赏金": self.wf_cetus_bounty,
+            "夜灵平原赏金": self.wf_cetus_bounty,
+            "金星赏金": self.wf_venus_bounty,
+            "奥布山谷赏金": self.wf_venus_bounty,
+            "索拉里斯赏金": self.wf_venus_bounty,
+            "火卫二赏金": self.wf_deimos_bounty,
+            "魔胎之境赏金": self.wf_deimos_bounty,
+            "扎里曼赏金": self.wf_zariman_bounty,
+            "老家赏金": self.wf_zariman_bounty,
+            "圣所赏金": self.wf_cavia_bounty,
+            "解剖圣所赏金": self.wf_cavia_bounty,
+            "科维兽赏金": self.wf_cavia_bounty,
+            "1999赏金": self.wf_hex_bounty,
+            "六人组赏金": self.wf_hex_bounty,
             "夜灵平原": self.wf_cetus_cycle,
             "希图斯": self.wf_cetus_cycle,
             "cetus": self.wf_cetus_cycle,
@@ -714,6 +745,12 @@ class WarframeHelperPlugin(Star):
             "双衍王镜": self.wf_duviri_cycle,
             "duviri": self.wf_duviri_cycle,
             "轮回奖励": self.wf_duviri_circuit_rewards,
+            "沉沦之地": self.wf_descent,
+            "爬塔": self.wf_descent,
+            "1999日历": self.wf_calendar,
+            "日历": self.wf_calendar,
+            "本周灵化": self.wf_incarnon,
+            "灵化": self.wf_incarnon,
             "双衍轮回": self.wf_duviri_circuit_rewards,
             "双衍轮回奖励": self.wf_duviri_circuit_rewards,
             "circuit": self.wf_duviri_circuit_rewards,
@@ -1072,6 +1109,13 @@ class WarframeHelperPlugin(Star):
         if result is not None:
             yield result
 
+    @filter.command("翻译")
+    async def wf_translate(self, event: AstrMessageEvent, args: GreedyStr):
+        _safe_disable_llm(event, reason="/翻译")
+        result = await wiki_commands.translate(event, split_tokens(str(args)), self.term_mapper)
+        if result is not None:
+            yield result
+
     @filter.command("wfmap")
     async def wfmap(self, event: AstrMessageEvent, args: GreedyStr):
         _safe_disable_llm(event, reason="/wfmap")
@@ -1082,6 +1126,112 @@ class WarframeHelperPlugin(Star):
         )
         if result is not None:
             yield result
+
+    def _get_knowledge_service(self) -> KnowledgeService:
+        if self._knowledge_service is None:
+            settings = (self.config or {}).get("knowledge_base") or {}
+            name = str(settings.get("name") or "Warframe")
+            path = (
+                Path(get_astrbot_plugin_data_path())
+                / "astrbot_plugin_warframe_helper"
+                / "knowledge_entries.json"
+            )
+            self._knowledge_service = KnowledgeService(
+                getattr(self.context, "kb_manager", None), name, path
+            )
+        return self._knowledge_service
+
+    @filter.command("wf知识")
+    async def wf_knowledge(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+        _safe_disable_llm(event, reason="/wf知识")
+        if not event.is_admin():
+            yield event.plain_result("无权限：仅 AstrBot 管理员可维护知识库。")
+            return
+        try:
+            action, question, answer, source = parse_knowledge_command(str(args))
+            service = self._get_knowledge_service()
+            if action == "upsert":
+                await service.upsert(question, answer, source, str(event.get_sender_id()))
+                response = f"已收录知识：{question}"
+            elif action == "delete":
+                removed = await service.delete(question)
+                response = f"已删除知识：{question}" if removed else "未找到这条知识。"
+            elif action == "show":
+                entry = service.get(question)
+                response = (
+                    f"问题：{entry.question}\n答案：{entry.answer}"
+                    + (f"\n来源：{entry.source}" if entry.source else "")
+                    if entry else "未找到这条知识。"
+                )
+            elif action == "seed":
+                seed_path = Path(__file__).resolve().parent / "assets" / "knowledge" / "seed_zh.json"
+                examples = json.loads(seed_path.read_text(encoding="utf-8"))
+                added = 0
+                for example in examples:
+                    if service.get(example["question"]) is None:
+                        await service.upsert(
+                            example["question"], example["answer"],
+                            example["source"], str(event.get_sender_id()),
+                        )
+                        added += 1
+                response = f"已导入 {added} 条官方中文资料示例；已有同名问题保持不变。"
+            else:
+                entries = service.list_entries()
+                response = "已收录知识：\n" + "\n".join(
+                    f"{index}. {entry.question}" for index, entry in enumerate(entries[:20], 1)
+                ) if entries else "知识库还没有管理员问答。"
+        except (ValueError, KnowledgeUnavailable) as exc:
+            response = str(exc)
+        except Exception as exc:
+            logger.exception("WF knowledge update failed: %s", exc)
+            response = "知识库更新失败，请查看 AstrBot 日志。"
+        yield event.plain_result(response)
+
+    @filter.on_llm_request()
+    async def wf_knowledge_rag_request(self, event: AstrMessageEvent, req):
+        settings = (self.config or {}).get("knowledge_base") or {}
+        if not settings.get("enabled", True):
+            return
+        question = addressed_knowledge_question(event)
+        if question is None:
+            return
+        if event.is_private_chat() and not settings.get("private_enabled", True):
+            return
+        if self._enable_no_prefix_commands and self._parse_no_prefix_command(question)[0] is not None:
+            return
+        try:
+            from astrbot.api import sp
+            from astrbot.core.agent.message import TextPart
+
+            native_config = self.context.get_config(umo=event.unified_msg_origin)
+            if native_config.get("kb_agentic_mode", False):
+                logger.warning("[WFKnowledgeRAG] agentic knowledge mode is enabled; using AstrBot's own knowledge tool. Disable agentic mode for automatic RAG.")
+                return
+            session_config = await sp.session_get(event.unified_msg_origin, "kb_config", default={})
+            if isinstance(session_config, dict) and "kb_ids" in session_config:
+                if not session_config["kb_ids"]:
+                    return
+                native_configured = True
+            else:
+                native_configured = bool(native_config.get("kb_names"))
+            service = self._get_knowledge_service()
+            stats = await prepare_rag(
+                event, req, service, part_factory=TextPart,
+                native_configured=native_configured,
+                timeout_sec=max(.1, min(30, float(settings.get("timeout_sec", 5)))),
+                max_chunks=max(1, min(8, int(settings.get("max_chunks", 3)))),
+                max_context_chars=max(500, min(20000, int(settings.get("max_context_chars", 6000)))),
+            )
+            log = logger.warning if stats["outcome"] in {"error", "timeout", "native_unparsed"} else logger.info
+            log("[WFKnowledgeRAG] outcome=%s chunks=%s elapsed_ms=%s error_type=%s", stats["outcome"], stats["chunks"], stats["elapsed_ms"], stats["error_type"])
+        except Exception as exc:
+            logger.warning("[WFKnowledgeRAG] enhancement failed (%s); continuing native chat.", type(exc).__name__)
+
+    @filter.on_llm_response()
+    async def wf_knowledge_rag_response(self, event: AstrMessageEvent, resp):
+        text = getattr(resp, "completion_text", None)
+        if isinstance(text, str) and text:
+            resp.completion_text = decorate_answer(event, text)
 
     @filter.command("wfmapdel")
     async def wfmapdel(self, event: AstrMessageEvent, args: GreedyStr):
@@ -1249,8 +1399,16 @@ class WarframeHelperPlugin(Star):
                 subtitle="/奸商（别名：虚空商人、baro）/仲裁 /电波（别名：夜波、nightwave）",
             ),
             WorldstateRow(
+                title="翻译",
+                subtitle="/翻译 关键词（例：/翻译 夜灵p）",
+            ),
+            WorldstateRow(
+                title="周常与日历",
+                subtitle="/沉沦之地（爬塔） /1999日历（日历） /本周灵化（灵化）",
+            ),
+            WorldstateRow(
                 title="世界状态（事件）",
-                subtitle="/入侵（别名：invasions）/集团（别名：syndicate）/赏金（别名：希图斯赏金）",
+                subtitle="/入侵 /集团 /赏金 地区；/地球赏金 /金星赏金 /火卫二赏金 /扎里曼赏金 /圣所赏金 /1999赏金",
             ),
             WorldstateRow(
                 title="循环",
@@ -1267,6 +1425,10 @@ class WarframeHelperPlugin(Star):
             WorldstateRow(
                 title="Wiki 查询",
                 subtitle="/wk 关键词",
+            ),
+            WorldstateRow(
+                title="知识增强聊天",
+                subtitle="群聊 @bot 或直接私聊；管理员：/wf知识 问题 | 答案 | 来源链接；/wf知识 初始化、查看、删除、列表",
             ),
             WorldstateRow(
                 title="工具",
@@ -1917,6 +2079,29 @@ class WarframeHelperPlugin(Star):
         async for output in self._yield_result_and_cleanup_image(result):
             yield output
 
+    async def _weekly_activity(self, event, args, kind):
+        _safe_disable_llm(event, reason=f"weekly:{kind}")
+        result = await worldstate_commands.cmd_weekly_activity(
+            event=event, raw_args=str(args), worldstate_client=self.worldstate_client, kind=kind,
+        )
+        async for output in self._yield_result_and_cleanup_image(result):
+            yield output
+
+    @filter.command("沉沦之地", alias={"爬塔"})
+    async def wf_descent(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self._weekly_activity(event, args, "descent"):
+            yield output
+
+    @filter.command("1999日历", alias={"日历"})
+    async def wf_calendar(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self._weekly_activity(event, args, "calendar"):
+            yield output
+
+    @filter.command("本周灵化", alias={"灵化"})
+    async def wf_incarnon(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self._weekly_activity(event, args, "incarnon"):
+            yield output
+
     @filter.command("入侵", alias={"invasions"})
     async def wf_invasions(
         self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
@@ -1971,7 +2156,7 @@ class WarframeHelperPlugin(Star):
             yield output
 
     @filter.command("赏金", alias={"bounty"})
-    async def wf_bounty(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
+    async def wf_bounty(self, event: AstrMessageEvent, args: GreedyStr):
         """查询平原赏金任务。用法：/赏金 [希图斯/福尔图娜/魔胎] [平台]"""
 
         _safe_disable_llm(event, reason="/赏金")
@@ -1991,9 +2176,35 @@ class WarframeHelperPlugin(Star):
         async for output in self._yield_result_and_cleanup_image(result):
             yield output
 
-    @filter.command("希图斯赏金")
+
+    @filter.command("金星赏金", alias={"奥布山谷赏金", "索拉里斯赏金"})
+    async def wf_venus_bounty(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self.wf_bounty(event, f"金星 {args}".strip()):
+            yield output
+
+    @filter.command("火卫二赏金", alias={"魔胎之境赏金"})
+    async def wf_deimos_bounty(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self.wf_bounty(event, f"火卫二 {args}".strip()):
+            yield output
+
+    @filter.command("扎里曼赏金", alias={"老家赏金"})
+    async def wf_zariman_bounty(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self.wf_bounty(event, f"扎里曼 {args}".strip()):
+            yield output
+
+    @filter.command("圣所赏金", alias={"解剖圣所赏金", "科维兽赏金"})
+    async def wf_cavia_bounty(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self.wf_bounty(event, f"圣所 {args}".strip()):
+            yield output
+
+    @filter.command("1999赏金", alias={"六人组赏金"})
+    async def wf_hex_bounty(self, event: AstrMessageEvent, args: GreedyStr):
+        async for output in self.wf_bounty(event, f"1999 {args}".strip()):
+            yield output
+
+    @filter.command("希图斯赏金", alias={"地球赏金", "夜灵平原赏金"})
     async def wf_cetus_bounty(
-        self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()
+        self, event: AstrMessageEvent, args: GreedyStr
     ):
         """快捷指令：/希图斯赏金 = /赏金 希图斯"""
 

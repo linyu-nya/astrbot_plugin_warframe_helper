@@ -195,4 +195,16 @@ async def collect_push_events(
     if trader and trader.active and trader.inventory:
         events.append(_void_trader_event(trader))
 
+    from ..utils.bounty_push import eligible_bounties
+    boards = await _safe_fetch(lambda: client.fetch_syndicates(platform=platform, language="zh"))
+    for name, board, job in eligible_bounties(boards or []):
+        signature = _fallback_signature(name, board.expiry_utc, job.job_id, job.title,
+                                        job.min_level, job.max_level, job.objective, job.reward_table)
+        lines = ["【高效率赏金】", f"{name} · 歼灭 | {job.node or '等级未知'}"]
+        if job.faction:
+            lines.append(f"派系：{job.faction}")
+        if job.objective:
+            lines.append(f"额外目标：{job.objective}")
+        lines.append(f"剩余时间：{job.eta}")
+        events.append(PushEvent(kind="bounty", signature=signature, text="\n".join(lines)))
     return events

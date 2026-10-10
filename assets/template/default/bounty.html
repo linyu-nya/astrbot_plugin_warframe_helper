@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 980px; margin: 0; color: #f2f7f5; font-family: "Noto Sans CJK SC", "Noto Sans SC", sans-serif; }
+    body { padding: 30px; background: #14232b; }
+    .header { padding: 26px 30px; background: rgba(14, 28, 35, .84); border: 1px solid rgba(211,234,222,.2); border-radius: 16px; margin-bottom: 18px; }
+    .title { font-size: 38px; font-weight: 700; }
+    .header-line { font-size: 19px; color: #c1d2cf; margin-top: 5px; }
+    .rows { display: flex; flex-direction: column; gap: 12px; }
+    .row-card { position: relative; padding: 20px 26px; background: rgba(14, 28, 35, .84); border: 1px solid rgba(211,234,222,.2); border-radius: 14px; overflow: hidden; }
+    .row-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 5px; background: #79c6a7; }
+    .row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .row-title { font-size: 24px; font-weight: 700; line-height: 1.35; min-width: 0; overflow-wrap: anywhere; }
+    .row-tag { flex: none; font-size: 16px; font-weight: 700; color: #e8c97b; border: 1px solid rgba(232,201,123,.55); background: rgba(232,201,123,.11); border-radius: 8px; padding: 5px 10px; white-space: nowrap; }
+    .row-subtitle { font-size: 17px; line-height: 1.5; color: #d6e4df; margin-top: 10px; }
+    .detail { display: block; padding-top: 4px; overflow-wrap: anywhere; }
+    .detail strong { font-weight: 700; color: #a3d8c4; }
+    .detail:first-child { padding-top: 0; }
+  </style>
+  {% if render_theme and render_theme.enabled %}<style>{{ render_theme.css | safe }}</style>{% endif %}
+</head>
+<body{% if render_theme and render_theme.enabled %} class="wf-custom-background"{% endif %}>
+  <header class="header">
+    <div class="title">{{ page.title }}</div>
+    {% for line in page.header_lines %}<div class="header-line">{{ line }}</div>{% endfor %}
+  </header>
+  <main class="rows">
+    {% for row in page.rows %}
+    <section class="row-card">
+      <div class="row-head"><div class="row-title">{{ row.title }}</div>{% if row.tag %}<div class="row-tag">{{ row.tag }}</div>{% endif %}</div>
+      {% if row.subtitle %}<div class="row-subtitle">
+        {% for part in row.subtitle.split(' | ') %}
+          {% set sections = part.split('：', 1) %}
+          <span class="detail">{% if sections | length > 1 %}<strong>{{ sections[0] }}：</strong>{{ sections[1] }}{% else %}{{ part }}{% endif %}</span>
+        {% endfor %}
+      </div>{% endif %}
+    </section>
+    {% endfor %}
+  </main>
+</body>
+</html>

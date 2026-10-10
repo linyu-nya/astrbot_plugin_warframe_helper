@@ -1374,180 +1374,110 @@ async def cmd_bounties(
     raw_args: str,
     worldstate_client: WarframeWorldstateClient,
 ):
-    raw_tokens = split_tokens(str(raw_args))
-    platform_norm = worldstate_platform_from_tokens(raw_tokens)
+    from ..utils.bounty_regions import REGIONS, key, region_for
 
-    platform_tokens = {
-        _normalize_compact(k) for k in WORLDSTATE_PLATFORM_ALIASES.keys() if k
-    } | {_normalize_compact(v) for v in WORLDSTATE_PLATFORM_ALIASES.values() if v}
-
-    query_tokens = [
-        t for t in raw_tokens if _normalize_compact(t) not in platform_tokens
-    ]
-    query = "".join([str(t).strip() for t in query_tokens if str(t).strip()])
-    qn = _normalize_compact(query)
-
-    plains: list[tuple[str, set[str], set[str]]] = [
-        (
-            "希图斯",
-            {"希图斯", "夜灵平原", "cetus", "poe"},
-            {"希图斯", "奥斯顿", "cetussyndicate", "ostrons"},
-        ),
-        (
-            "福尔图娜",
-            {"福尔图娜", "奥布山谷", "金星平原", "vallis", "orb", "fortuna"},
-            {
-                "福尔图娜",
-                "索拉里斯联合",
-                "solaris",
-                "solarisunited",
-                "solarissyndicate",
-            },
-        ),
-        (
-            "魔胎之境",
-            {"魔胎之境", "魔胎", "deimos", "cambion", "entrati"},
-            {"英择谛", "entrati", "entratisyndicate"},
-        ),
-    ]
-
-    def match_plain(q: str) -> list[tuple[str, set[str], set[str]]]:
-        if not q:
-            return []
-        hits: list[tuple[str, set[str], set[str]]] = []
-        for plain_name, aliases_raw, _ in plains:
-            name_norm = _normalize_compact(plain_name)
-            aliases = {_normalize_compact(str(x)) for x in aliases_raw}
-            if q in name_norm or any(q in x for x in aliases):
-                hits.append((plain_name, aliases_raw, _))
-        return hits
-
-    matched_plain: tuple[str, set[str], set[str]] | None = None
-    if qn:
-        matched = match_plain(qn)
-        if not matched:
-            return event.plain_result(
-                "未识别平原名称。用法：/赏金 [希图斯/福尔图娜/魔胎] [平台]"
-            )
-        if len(matched) > 1:
-            names = "、".join([m[0] for m in matched])
-            return event.plain_result(f"匹配到多个平原：{names}。请更具体一些。")
-        matched_plain = matched[0]
-
-    syndicates = await worldstate_client.fetch_syndicates(
-        platform=platform_norm, language="zh"
-    )
+    tokens = split_tokens(str(raw_args))
+    platform = worldstate_platform_from_tokens(tokens)
+    platform_keys = {key(x) for x in (*WORLDSTATE_PLATFORM_ALIASES, *WORLDSTATE_PLATFORM_ALIASES.values())}
+    query = " ".join(x for x in tokens if key(x) not in platform_keys)
+    region = region_for(query)
+    syndicates = await worldstate_client.fetch_syndicates(platform=platform, language="zh")
     if syndicates is None:
-        return event.plain_result(
-            "未获取到赏金任务信息（可能是网络限制或接口不可达）。"
-        )
-    if not syndicates:
-        return event.plain_result(f"当前无赏金任务（{platform_norm}）。")
+        return event.plain_result("未获取到赏金数据，请稍后重试。")
 
-    def is_bounty_name(name: str, plain_spec: tuple[str, set[str], set[str]]) -> bool:
-        n = _normalize_compact(name)
-        _, _, syndicates_raw = plain_spec
-        keys = {_normalize_compact(str(x)) for x in syndicates_raw if str(x).strip()}
-        if n in keys:
-            return True
-        return any(k and k in n for k in keys)
-
-    def bounty_jobs_of(s: SyndicateInfo) -> list[SyndicateJob]:
-        return [j for j in (s.jobs or ()) if (j.mission_type or "").strip() == "赏金"]
-
-    plain_items: list[
-        tuple[tuple[str, set[str], set[str]], SyndicateInfo, list[SyndicateJob]]
-    ] = []
-    for plain in plains:
-        candidates = [s for s in syndicates if is_bounty_name(s.name, plain)]
-        if not candidates:
+    # Match stable syndicate IDs first; translation changes must not mix regions.
+    groups = {}
+    for info in syndicates:
+        matched = region_for(info.tag) or region_for(info.name)
+        jobs = [job for job in info.jobs if job.mission_type == "赏金"]
+        if not matched and not jobs:
             continue
-        candidates.sort(key=lambda x: len(bounty_jobs_of(x)), reverse=True)
-        picked = candidates[0]
-        plain_items.append((plain, picked, bounty_jobs_of(picked)))
-
-    if matched_plain is not None:
-        picked = next(
-            (x for x in plain_items if x[0][0] == matched_plain[0]),
-            None,
+        name = matched[0] if matched else info.name
+        quality = (len(jobs), sum(bool(getattr(job, "objective", "")) for job in jobs),
+                   sum(bool(getattr(job, "task_type", "")) for job in jobs))
+        previous_jobs = groups[name][1] if name in groups else []
+        previous_quality = (len(previous_jobs),
+                            sum(bool(getattr(job, "objective", "")) for job in previous_jobs),
+                            sum(bool(getattr(job, "task_type", "")) for job in previous_jobs))
+        if name not in groups or quality > previous_quality:
+            groups[name] = (info, jobs)
+    if query:
+        wanted = region[0] if region else next(
+            (name for name, (info, _) in groups.items()
+             if key(query) in {key(name), key(info.name), key(info.tag)}), None
         )
-        plain_name = matched_plain[0]
-        if picked is None or not picked[2]:
-            return event.plain_result(f"{plain_name} 当前无赏金任务（{platform_norm}）。")
-
-        _, info, jobs = picked
-        rows: list[WorldstateRow] = []
-        for j in jobs[:18]:
-            node = j.node or "?"
-            rows.append(
-                WorldstateRow(
-                    title=f"赏金 - {node}",
-                    right=f"剩余{j.eta}" if j.eta else None,
-                )
+        if not wanted:
+            choices = "、".join(dict.fromkeys([r[0] for r in REGIONS] + list(groups)))
+            return event.plain_result(f"未识别赏金地区或集团：{query}。可查询：{choices}。用法：/赏金 地区")
+        if wanted not in groups or not groups[wanted][1]:
+            return event.plain_result(
+                f"{wanted}赏金：当前接口未提供任务详情，暂时无法确认。"
             )
+        selected = {wanted: groups[wanted]}
+    else:
+        selected = groups
+    if not selected:
+        return event.plain_result("当前接口未提供赏金任务数据。")
 
-        rendered = await render_worldstate_rows_image_to_file(
-            title=f"{plain_name}赏金",
-            header_lines=[
-                f"平台：{platform_norm}",
-                f"集团：{info.name}",
-                f"剩余：{info.eta}",
-                f"共{len(jobs)}条（展示前{min(18, len(jobs))}条）",
-            ],
-            rows=rows,
-            accent=(245, 158, 11, 255),
-        )
-        if rendered:
-            return event.image_result(rendered.path)
-
-        lines = [
-            f"{plain_name}赏金（{platform_norm}）剩余{info.eta}：共{len(jobs)}条"
-        ]
-        for j in jobs:
-            node = j.node or "?"
-            lines.append(f"- 赏金 - {node} | 剩余{j.eta}")
-        return event.plain_result("\n".join(lines))
-
-    rows: list[WorldstateRow] = []
-    for plain, info, jobs in plain_items:
-        plain_name = plain[0] or info.name or "平原"
-        if jobs:
-            subtitle = " | ".join([f"赏金-{(j.node or '?')}" for j in jobs[:3]])
-            right = f"剩余{info.eta}"
-            tag = f"共{len(jobs)}条"
-        else:
-            subtitle = "当前无赏金任务"
-            right = f"剩余{info.eta}" if info.eta else None
-            tag = "共0条"
-
-        rows.append(
-            WorldstateRow(
-                title=plain_name,
-                subtitle=subtitle,
-                right=right,
-                tag=tag,
-            )
-        )
-
-    if not rows:
-        return event.plain_result(f"当前无平原赏金任务（{platform_norm}）。")
+    rows = []
+    lines = []
+    for name, (info, jobs) in selected.items():
+        lines.append(f"{name}赏金（{platform}） | 集团：{info.name} | 剩余{info.eta}")
+        if not jobs:
+            rows.append(WorldstateRow(title=f"{name}赏金", subtitle="接口未提供任务详情"))
+            lines.append("接口未提供任务详情")
+        for index, job in enumerate(jobs, 1):
+            details = []
+            if job.faction:
+                details.append(f"派系：{job.faction}")
+            if getattr(job, "objective", ""):
+                details.append(f"额外目标：{job.objective}")
+            if job.standing and min(job.standing) >= 100:
+                details.append("阶段声望：" + " / ".join(map(str, job.standing)))
+            elif job.stages:
+                details.append(f"{job.stages} 阶段")
+            title = f"{index:02d} · {job.title or '赏金任务'}"
+            if not query:
+                title = f"{name} · {title}"
+            subtitle = " | ".join(details)
+            level = (job.node or "等级未知").replace("级", "")
+            rows.append(WorldstateRow(title=title, subtitle=subtitle, tag=f"{level} 级"))
+            lines.append(f"{title} | {level}级 | {subtitle} | 剩余{job.eta}")
 
     rendered = await render_worldstate_rows_image_to_file(
-        title="平原赏金",
-        header_lines=[
-            f"平台：{platform_norm}",
-            f"共{len(rows)}个平原（展示前{len(rows)}个）",
-        ],
+        title=f"{next(iter(selected))}赏金" if query else "当前赏金",
+        header_lines=[f"平台：{platform}", f"轮换剩余：{next(iter(selected.values()))[0].eta}",
+                      " / ".join(selected)],
         rows=rows,
-        accent=(245, 158, 11, 255),
+        accent=(103, 180, 158, 255),
+        template_filename="bounty.html",
     )
     if rendered:
         return event.image_result(rendered.path)
-
-    lines = [f"平原赏金（{platform_norm}）共{len(rows)}个平原："]
-    for plain, info, jobs in plain_items:
-        plain_name = plain[0] or info.name or "平原"
-        lines.append(f"- {plain_name} | 剩余{info.eta} | 共{len(jobs)}条")
-        for j in jobs[:3]:
-            lines.append(f"  - 赏金 - {(j.node or '?')} | 剩余{j.eta}")
     return event.plain_result("\n".join(lines))
+
+
+async def cmd_weekly_activity(*, event, raw_args, worldstate_client, kind):
+    from ..clients.weekly_activities import fetch_descent, fetch_calendar, ActivityReport
+    platform = worldstate_platform_from_tokens(split_tokens(str(raw_args)))
+    titles = {"descent": "沉沦之地", "calendar": "1999日历", "incarnon": "本周灵化"}
+    if kind == "incarnon":
+        info = await worldstate_client.fetch_duviri_circuit_rewards(platform=platform, language="zh")
+        report = ActivityReport("本周灵化与轮回战甲", info.eta,
+            tuple([("本周战甲", "、".join(info.normal_choices))] +
+                  [(f"灵化武器 {i}", name) for i, name in enumerate(info.steel_choices, 1)])) if info and info.steel_choices else None
+    else:
+        fetcher = fetch_descent if kind == "descent" else fetch_calendar
+        report = await fetcher(worldstate_client, platform=platform, language="zh")
+    if not report or not report.rows:
+        return event.plain_result(f"{titles[kind]}：当前接口未提供有效数据，请稍后重试。")
+    rows = [WorldstateRow(title=title, subtitle=detail) for title, detail in report.rows]
+    rendered = await render_worldstate_rows_image_to_file(
+        title=report.title, header_lines=[f"平台：{platform}", f"距离刷新：{report.eta}"],
+        rows=rows, accent=(103, 180, 158, 255),
+        template_filename="calendar.html" if kind == "calendar" else "status_list.html",
+    )
+    if rendered:
+        return event.image_result(rendered.path)
+    return event.plain_result("\n".join([report.title, f"距离刷新：{report.eta}"] +
+                                       [f"{title}：{detail}" for title, detail in report.rows]))

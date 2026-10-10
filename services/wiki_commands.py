@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from urllib.parse import urlencode
 
 try:
@@ -101,3 +102,34 @@ async def wk(event, args, mapper, client):
     else:
         message = f"暂时无法确认“{keyword}”是否有精确词条，以下是 Wiki 搜索页："
     return await _reply(event, f"{message}\n{search_url}")
+
+
+async def translate(event, args, mapper):
+    keyword = " ".join(part for arg in args for part in str(arg).split())
+    if not keyword:
+        return await _reply(event, "用法：/翻译 关键词")
+    try:
+        resolution = mapper.resolve_alias_only(keyword)
+        if _field(resolution, "matched", False):
+            target = normalize_wiki_keyword(_field(resolution, "canonical_full_name", ""))
+            return await _reply(event, f"【{keyword}】=> {target}")
+
+        normalized = normalize_wiki_keyword(keyword)
+        suffix = ""
+        base = normalized
+        for marker, label in ((r"\s*蓝图$", "蓝图"), (r"\s+Prime$", "Prime")):
+            hit = re.search(marker, base, re.IGNORECASE)
+            if hit:
+                base = base[:hit.start()].strip()
+                suffix = f" {label}{suffix}"
+        entries = mapper.find_effective_aliases(base)
+        chinese = sorted(
+            (str(_field(item, "alias", "")) for item in entries
+             if re.search(r"[\u4e00-\u9fff]", str(_field(item, "alias", "")))),
+            key=lambda name: (len(name), name),
+        )
+        if chinese:
+            return await _reply(event, f"【{keyword}】=> {chinese[0]}{suffix}")
+    except Exception:
+        pass
+    return await _reply(event, f"未找到“{keyword}”的本地翻译映射。")

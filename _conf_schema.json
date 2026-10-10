@@ -34,6 +34,12 @@
         "description": "启用自动推送服务",
         "hint": "关闭后停止后台轮询和主动消息，但保留已登记群及去重状态。"
       },
+      "bounty_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "高效率赏金推送",
+        "hint": "仅向已开启推送的群发送：扎里曼与圣所最高等级歼灭、六人组第6档歼灭（排除杀毒Mod）。缺少等级或档位依据时不推送。"
+      },
       "poll_interval_sec": {
         "type": "int",
         "default": 60,
@@ -48,6 +54,12 @@
     "_special": "select_provider",
     "description": "解析模型",
     "hint": "在wm/wmr等指令中，当用户输入了无法识别的缩写时，插件会使用该解析模型尝试解析。"
+  },
+  "render_image_format": {
+    "type": "string",
+    "default": "webp",
+    "description": "图片输出格式（webp 或 png）",
+    "hint": "webp 无损压缩，编码失败或文件未变小时自动保留 PNG。若 QQ 平台不支持 WebP，可填 png。"
   },
   "render_template_name": {
     "type": "string",
@@ -163,6 +175,47 @@
     "default": false,
     "description": "启用无前缀指令触发",
     "hint": "开启后，插件指令可不依赖 AstrBot 全局前缀直接触发（例如直接发送“电波”“wm 猴p”）。关闭时保持原有仅前缀触发行为。"
+  },
+  "knowledge_base": {
+    "type": "object",
+    "description": "Warframe 知识增强聊天（RAG）",
+    "hint": "需先在 AstrBot 创建同名知识库并配置 Embedding。群聊 @bot 和私聊的 AI 请求会检索候选资料，让 AstrBot 保留人格生成回答；没有相关资料时继续正常聊天。请关闭 AstrBot 的知识库 agentic 模式。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用知识增强聊天"
+      },
+      "private_enabled": {
+        "type": "bool",
+        "default": true,
+        "description": "启用私聊知识问答",
+        "hint": "私聊 AI 请求也检索知识库候选资料，并保留原有人格和联网搜索能力。"
+      },
+      "name": {
+        "type": "string",
+        "default": "Warframe",
+        "description": "AstrBot 知识库名称"
+      },
+      "timeout_sec": {
+        "type": "int",
+        "default": 5,
+        "description": "检索等待上限（秒）",
+        "hint": "插件检索超时后继续正常 AI 聊天；范围 1-30 秒。已由 AstrBot 原生模式完成的检索不受此项控制。"
+      },
+      "max_chunks": {
+        "type": "int",
+        "default": 3,
+        "description": "最多注入的知识片段数",
+        "hint": "范围 1-8；仅为候选资料，由模型判断是否相关并引用。"
+      },
+      "max_context_chars": {
+        "type": "int",
+        "default": 6000,
+        "description": "知识正文长度上限",
+        "hint": "范围 500-20000 字符，防止候选资料占用过多模型上下文。"
+      }
+    }
   },
   "debug_logging": {
     "type": "bool",

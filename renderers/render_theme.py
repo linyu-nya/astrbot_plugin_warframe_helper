@@ -26,11 +26,17 @@ _WORLDSTATE_COMMANDS = frozenset(
         "钢铁奖励",
         "集团",
         "赏金",
+        "沉沦之地",
+        "爬塔",
+        "1999日历",
+        "日历",
+        "本周灵化",
+        "灵化",
     }
 )
 _MARKET_TEMPLATES = frozenset({"wm.html", "wmr.html", "wfp.html"})
 _WORLDSTATE_TEMPLATES = frozenset(
-    {"status_list.html", "cycle_status.html", "event.html", "赏金.html"}
+    {"status_list.html", "cycle_status.html", "event.html", "赏金.html", "calendar.html", "bounty.html"}
 )
 
 

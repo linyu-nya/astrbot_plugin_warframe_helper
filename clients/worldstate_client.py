@@ -16,6 +16,7 @@ from astrbot.api import logger
 
 from ..http_utils import fetch_bytes
 from ..utils.wegame_sign import build_signed_wegame_url
+from ..utils.bounty_regions import region_for
 from .public_export_client import PublicExportClient
 
 Platform = Literal["pc", "cn", "ps4", "xb1", "swi"]
@@ -795,6 +796,18 @@ class SyndicateJob:
     node: str | None
     mission_type: str | None
     eta: str
+    title: str = ""
+    faction: str = ""
+    standing: tuple[int, ...] = ()
+    stages: int | None = None
+    min_level: int | None = None
+    max_level: int | None = None
+    tier: int | None = None
+    objective: str = ""
+    reward_pool: tuple[str, ...] = ()
+    reward_table: str = ""
+    task_type: str = ""
+    job_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,6 +815,8 @@ class SyndicateInfo:
     name: str
     eta: str
     jobs: tuple[SyndicateJob, ...]
+    tag: str = ""
+    expiry_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2165,11 +2180,32 @@ class WarframeWorldstateClient:
         self, *, platform: Platform = "pc", language: str = "zh"
     ) -> list[SyndicateInfo] | None:
         ws = await self._get_worldstate(platform=platform, language=language)
-        if not isinstance(ws, dict):
-            return None
-        missions = ws.get("SyndicateMissions")
+        missions = (ws.get("SyndicateMissions", ws.get("syndicateMissions"))
+                    if isinstance(ws, dict) else None)
+        # Newer regions publish only a seed in the official feed. Aggregators
+        # may supply their generated jobs; retain official rows if unavailable.
+        needs_details = not isinstance(missions, list) or any(
+            isinstance(row, dict) and region_for(row.get("Tag", row.get("syndicate", "")))
+            and not row.get("Jobs", row.get("jobs")) for row in missions
+        )
+        if needs_details and platform != "cn":
+            cache_key = f"bounty-details:{platform}:{language}"
+            extra = self._cache_get(cache_key)
+            if extra is None:
+                extra = await self._fetch_json_resilient([
+                    f"{url}?language={language}"
+                    for url in self._warframestat_urls(platform, "syndicateMissions")
+                ])
+                if isinstance(extra, list):
+                    self._cache_put(cache_key, extra)
+            if isinstance(extra, list):
+                missions = [*(missions or []), *extra]
+            from .bounty_oracle import fetch_oracle_bounties
+            oracle = await fetch_oracle_bounties(self, platform=platform, language=language)
+        else:
+            oracle = []
         if not isinstance(missions, list):
-            return []
+            return oracle or None
 
         tag_name = {
             "ArbitersSyndicate": "仲裁者",
@@ -2188,6 +2224,8 @@ class WarframeWorldstateClient:
             "VentkidsSyndicate": "通风小子",
             "HoldfastSyndicate": "扎里曼坚守者",
             "CaviaSyndicate": "卡维亚",
+            "EntratiLabSyndicate": "科维兽",
+            "HexSyndicate": "六人组",
         }
         dynamic_tag_name = await self._public_export.get_syndicate_tag_map(
             language=language
@@ -2202,7 +2240,7 @@ class WarframeWorldstateClient:
                 if isinstance(row.get("Tag"), str)
                 else row.get("tag")
                 if isinstance(row.get("tag"), str)
-                else None
+                else row.get("syndicate", "")
             )
             if isinstance(tag, str) and tag in dynamic_tag_name:
                 name = dynamic_tag_name[tag]
@@ -2214,6 +2252,10 @@ class WarframeWorldstateClient:
                 name = "?"
 
             expiry = _parse_any_datetime(row.get("Expiry") or row.get("expiry"))
+            activation = _parse_any_datetime(row.get("Activation") or row.get("activation"))
+            now = datetime.now(timezone.utc)
+            if row.get("active") is False or (expiry and expiry <= now) or (activation and activation > now):
+                continue
             eta = _format_eta_from_dt(expiry)
 
             jobs: list[SyndicateJob] = []
@@ -2223,7 +2265,7 @@ class WarframeWorldstateClient:
             if not isinstance(jobs_raw, list):
                 jobs_raw = row.get("JobList")
             if isinstance(jobs_raw, list):
-                for j in jobs_raw[:18]:
+                for j in jobs_raw:
                     if not isinstance(j, dict):
                         continue
                     min_lv = (
@@ -2236,6 +2278,9 @@ class WarframeWorldstateClient:
                         if isinstance(j.get("maxEnemyLevel"), int)
                         else None
                     )
+                    levels = j.get("enemyLevels")
+                    if isinstance(levels, list) and len(levels) >= 2 and all(type(x) is int for x in levels[:2]):
+                        min_lv, max_lv = levels[:2]
                     if min_lv is not None and max_lv is not None:
                         node = f"{min_lv}-{max_lv}级"
                     elif min_lv is not None:
@@ -2244,7 +2289,54 @@ class WarframeWorldstateClient:
                         node = f"{max_lv}级"
                     else:
                         node = name
-                    jobs.append(SyndicateJob(node=node, mission_type="赏金", eta=eta))
+                    raw_title = j.get("type") or j.get("jobType") or ""
+                    translated = (await self._public_export.translate_unique_name_loose(
+                        raw_title, language=language
+                    )) if isinstance(raw_title, str) and raw_title.startswith("/") else raw_title
+                    title = translated or raw_title
+                    if isinstance(title, str) and title.startswith("/"):
+                        title = title.rsplit("/", 1)[-1]
+                    if not title:
+                        title = "隔离库" if j.get("isVault") else "赏金任务"
+                    if language.startswith("zh"):
+                        title = self._mission_type_cn(str(title))
+                        if not re.search(r"[\u4e00-\u9fff]", title):
+                            known = (
+                                ("Assassinate", "刺杀"), ("Exterminate", "歼灭"),
+                                ("Sabotage", "破坏"), ("Attrition", "捕获"),
+                                ("Reclamation", "回收"), ("Theft", "回收"),
+                                ("Defense", "防御"), ("Excavat", "挖掘"),
+                                ("Spy", "间谍"), ("Surviv", "生存"),
+                                ("Capture", "捕获"), ("Purify", "净化"),
+                            )
+                            title = next((label for marker, label in known
+                                          if marker.casefold() in title.casefold()), "赏金任务")
+                    if j.get("endless"):
+                        title = f"{title}（无尽）"
+                    faction = j.get("enemy") or j.get("faction") or row.get("enemy") or ""
+                    faction = (self._faction_name_cn(faction) or faction) if isinstance(faction, str) else ""
+                    xp = j.get("xpAmounts", j.get("standingStages", []))
+                    standing = tuple(x for x in xp if isinstance(x, int)) if isinstance(xp, list) else ()
+                    table = j.get("rewards") or j.get("uniqueName") or ""
+                    table = table if isinstance(table, str) else ""
+                    tier = j.get("tier")
+                    if type(tier) is not int or tier < 1:
+                        tier_match = re.search(r"Tier([A-G]|[1-7])(?:Table|Rewards|$)", table, re.IGNORECASE)
+                        tier = (int(tier_match[1]) if tier_match[1].isdigit() else ord(tier_match[1].upper()) - ord('A') + 1) if tier_match else None
+                    rewards = j.get("rewardPool", [])
+                    rewards = tuple(x for x in rewards if isinstance(x, str)) if isinstance(rewards, list) else ()
+                    objective = j.get("challenge") or j.get("objective") or ""
+                    objective = objective if isinstance(objective, str) else ""
+                    task_type = j.get("missionType") or j.get("type") or ""
+                    task_type = self._mission_type_cn(task_type) if isinstance(task_type, str) else ""
+                    jobs.append(SyndicateJob(
+                        node=node, mission_type="赏金", eta=eta,
+                        title=str(title), faction=faction, standing=standing,
+                        stages=len(standing) if standing else None,
+                        min_level=min_lv, max_level=max_lv, tier=tier,
+                        objective=objective, reward_pool=rewards, reward_table=table,
+                        task_type=task_type, job_id=str(j.get("id") or ""),
+                    ))
 
             nodes = row.get("Nodes")
             if not isinstance(nodes, list):
@@ -2261,9 +2353,9 @@ class WarframeWorldstateClient:
                         )
                     )
 
-            out.append(SyndicateInfo(name=name, eta=eta, jobs=tuple(jobs)))
+            out.append(SyndicateInfo(name=name, eta=eta, jobs=tuple(jobs), tag=tag or "", expiry_utc=expiry))
 
-        return out
+        return [*out, *oracle]
 
     async def fetch_void_trader(
         self, *, platform: Platform = "pc", language: str = "zh"
@@ -3258,6 +3350,9 @@ class WarframeWorldstateClient:
         steel: list[str] = []
 
         schedule = ws.get("EndlessXpSchedule")
+        if isinstance(schedule, list):
+            from .weekly_activities import current_rotation
+            schedule = current_rotation(schedule, now=server_dt)
         expiry: datetime | None = None
         rows: Any = None
         if isinstance(schedule, dict):

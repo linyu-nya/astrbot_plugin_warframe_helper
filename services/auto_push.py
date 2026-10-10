@@ -31,6 +31,7 @@ class AutoPushService:
         section = config.get("auto_push") if isinstance(config, dict) else None
         section = section if isinstance(section, dict) else {}
         self.enabled = bool(section.get("enabled", True))
+        self.bounty_enabled = bool(section.get("bounty_enabled", True))
         try:
             interval = int(section.get("poll_interval_sec", 60))
         except (TypeError, ValueError):
@@ -187,7 +188,8 @@ class AutoPushService:
         changed = False
         for session, target in targets.items():
             platform = str(target.get("platform") or "pc")
-            current = platform_events.get(platform, [])
+            current = [event for event in platform_events.get(platform, [])
+                       if self.bounty_enabled or event.kind != "bounty"]
             seen_raw = target.get("seen")
             seen: dict[str, list[str]] = (
                 {str(kind): list(signatures) for kind, signatures in seen_raw.items()}
