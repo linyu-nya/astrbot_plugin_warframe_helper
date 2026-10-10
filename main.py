@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ from .services.knowledge_base import (
     parse_knowledge_command,
 )
 from .services.knowledge_rag import decorate_answer, prepare_rag
+from .services.knowledge_diagnostics import KnowledgeRagMonitor, evaluate_retrieval, format_status
 from .services.market.pager import cmd_wfp
 from .services.market.wm import cmd_wm
 from .services.market.wmr import cmd_wmr
@@ -1128,9 +1130,9 @@ class WarframeHelperPlugin(Star):
             yield result
 
     def _get_knowledge_service(self) -> KnowledgeService:
-        if self._knowledge_service is None:
-            settings = (self.config or {}).get("knowledge_base") or {}
-            name = str(settings.get("name") or "Warframe")
+        settings = (self.config or {}).get("knowledge_base") or {}
+        name = str(settings.get("name") or "Warframe")
+        if self._knowledge_service is None or self._knowledge_service.kb_name != name:
             path = (
                 Path(get_astrbot_plugin_data_path())
                 / "astrbot_plugin_warframe_helper"
@@ -1141,6 +1143,18 @@ class WarframeHelperPlugin(Star):
             )
         return self._knowledge_service
 
+    def _get_knowledge_monitor(self):
+        if getattr(self, "_knowledge_monitor", None) is None:
+            self._knowledge_monitor = KnowledgeRagMonitor()
+        return self._knowledge_monitor
+
+    async def _knowledge_mode(self, event):
+        from astrbot.api import sp
+        config = self.context.get_config(umo=event.unified_msg_origin)
+        session = await sp.session_get(event.unified_msg_origin, "kb_config", default={})
+        explicit = isinstance(session, dict) and "kb_ids" in session
+        return {"agentic": bool(config.get("kb_agentic_mode", False)), "native_configured": bool(session["kb_ids"]) if explicit else bool(config.get("kb_names")), "session_disabled": explicit and not session["kb_ids"]}
+
     @filter.command("wf知识")
     async def wf_knowledge(self, event: AstrMessageEvent, args: GreedyStr = GreedyStr()):
         _safe_disable_llm(event, reason="/wf知识")
@@ -1150,7 +1164,48 @@ class WarframeHelperPlugin(Star):
         try:
             action, question, answer, source = parse_knowledge_command(str(args))
             service = self._get_knowledge_service()
-            if action == "upsert":
+            editor = str(event.get_sender_id())
+            if action == "topic":
+                await service.upsert_topic(question, answer, source, editor)
+                response = f"已收录主题资料：{question}"
+            elif action == "status":
+                mode = await self._knowledge_mode(event)
+                response = format_status(await service.status(), self._get_knowledge_monitor().summary(event.unified_msg_origin), (self.config or {}).get("knowledge_base") or {}, agentic=mode["agentic"], native_configured=mode["native_configured"])
+                if mode["session_disabled"]:
+                    response += "\n本会话已明确关闭知识库检索。"
+            elif action in {"pack", "import"}:
+                if action == "pack":
+                    pack_path = Path(__file__).resolve().parent / "assets" / "knowledge" / "starter_topics_zh.json"
+                    report = await service.import_pack(json.loads(pack_path.read_text(encoding="utf-8")), editor)
+                else:
+                    report = await service.import_directory(service.path.parent / "knowledge_import", editor)
+                response = f"资料导入：新增 {report['added']}，更新 {report['updated']}，跳过 {report['skipped']}，失败 {report['failed']}。"
+                if report.get("pending"):
+                    response += f"\n因错误暂停，剩余 {report['pending']} 条未处理；修复提供商后可重新执行继续导入。"
+                if action == "import":
+                    response += f"\n导入目录：{service.path.parent / 'knowledge_import'}"
+            elif action == "probe":
+                settings = (self.config or {}).get("knowledge_base") or {}
+                started = time.perf_counter()
+                hits = await asyncio.wait_for(service.retrieve(question, max_chunks=3), timeout=max(.1, min(30, float(settings.get("timeout_sec", 5)))))
+                elapsed = round((time.perf_counter() - started) * 1000)
+                self._get_knowledge_monitor().record(event.unified_msg_origin, {"outcome": "probe", "chunks": len(hits), "elapsed_ms": elapsed})
+                response = f"混合检索测试：{len(hits)} 个候选，耗时 {elapsed} ms。"
+                for index, hit in enumerate(hits, 1):
+                    response += f"\n{index}. {hit.get('doc_name') or '知识库文档'}"
+                    if hit.get("source"):
+                        response += f"\n{hit['source']}"
+                response += "\n候选结果不代表每条都能支持答案；此测试不调用聊天模型。"
+            elif action == "evaluate":
+                cases_path = Path(__file__).resolve().parent / "assets" / "knowledge" / "evaluation_questions_zh.json"
+                cases = json.loads(cases_path.read_text(encoding="utf-8"))
+                await event.send(event.plain_result(f"开始 {len(cases)} 道检索评测，会调用知识库检索，请稍候。"))
+                settings = (self.config or {}).get("knowledge_base") or {}
+                report = await evaluate_retrieval(service, cases, timeout_sec=max(.1, min(30, float(settings.get("timeout_sec", 5)))), record=lambda stats: self._get_knowledge_monitor().record(event.unified_msg_origin, stats))
+                report_path = service.path.parent / "knowledge_evaluation_last.json"
+                report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                response = f"检索评测完成：主题候选召回 {report['positive_hits']}/{report['positive_count']}；错误 {report['errors']}。\nP50 {report['p50_ms']} ms / P95 {report['p95_ms']} ms。\n闲聊返回候选 {report['chat_candidates']}/5；这不表示模型实际引用或误答。\n完整报告：{report_path}"
+            elif action == "upsert":
                 await service.upsert(question, answer, source, str(event.get_sender_id()))
                 response = f"已收录知识：{question}"
             elif action == "delete":
@@ -1159,8 +1214,7 @@ class WarframeHelperPlugin(Star):
             elif action == "show":
                 entry = service.get(question)
                 response = (
-                    f"问题：{entry.question}\n答案：{entry.answer}"
-                    + (f"\n来源：{entry.source}" if entry.source else "")
+                    entry.document_text()
                     if entry else "未找到这条知识。"
                 )
             elif action == "seed":
@@ -1179,9 +1233,11 @@ class WarframeHelperPlugin(Star):
                 entries = service.list_entries()
                 response = "已收录知识：\n" + "\n".join(
                     f"{index}. {entry.question}" for index, entry in enumerate(entries[:20], 1)
-                ) if entries else "知识库还没有管理员问答。"
+                ) if entries else "知识库还没有插件管理的资料。"
         except (ValueError, KnowledgeUnavailable) as exc:
             response = str(exc)
+        except TimeoutError:
+            response = "知识库检索测试超时，请检查 Embedding 提供商及后台日志。"
         except Exception as exc:
             logger.exception("WF knowledge update failed: %s", exc)
             response = "知识库更新失败，请查看 AstrBot 日志。"
@@ -1200,28 +1256,25 @@ class WarframeHelperPlugin(Star):
         if self._enable_no_prefix_commands and self._parse_no_prefix_command(question)[0] is not None:
             return
         try:
-            from astrbot.api import sp
             from astrbot.core.agent.message import TextPart
 
-            native_config = self.context.get_config(umo=event.unified_msg_origin)
-            if native_config.get("kb_agentic_mode", False):
+            mode = await self._knowledge_mode(event)
+            if mode["agentic"]:
+                self._get_knowledge_monitor().record(event.unified_msg_origin, {"outcome": "agentic_enabled", "chunks": 0, "elapsed_ms": 0})
                 logger.warning("[WFKnowledgeRAG] agentic knowledge mode is enabled; using AstrBot's own knowledge tool. Disable agentic mode for automatic RAG.")
                 return
-            session_config = await sp.session_get(event.unified_msg_origin, "kb_config", default={})
-            if isinstance(session_config, dict) and "kb_ids" in session_config:
-                if not session_config["kb_ids"]:
-                    return
-                native_configured = True
-            else:
-                native_configured = bool(native_config.get("kb_names"))
+            if mode["session_disabled"]:
+                self._get_knowledge_monitor().record(event.unified_msg_origin, {"outcome": "session_disabled", "chunks": 0, "elapsed_ms": 0})
+                return
             service = self._get_knowledge_service()
             stats = await prepare_rag(
                 event, req, service, part_factory=TextPart,
-                native_configured=native_configured,
+                native_configured=mode["native_configured"],
                 timeout_sec=max(.1, min(30, float(settings.get("timeout_sec", 5)))),
                 max_chunks=max(1, min(8, int(settings.get("max_chunks", 3)))),
                 max_context_chars=max(500, min(20000, int(settings.get("max_context_chars", 6000)))),
             )
+            self._get_knowledge_monitor().record(event.unified_msg_origin, stats)
             log = logger.warning if stats["outcome"] in {"error", "timeout", "native_unparsed"} else logger.info
             log("[WFKnowledgeRAG] outcome=%s chunks=%s elapsed_ms=%s error_type=%s", stats["outcome"], stats["chunks"], stats["elapsed_ms"], stats["error_type"])
         except Exception as exc:
@@ -1232,6 +1285,9 @@ class WarframeHelperPlugin(Star):
         text = getattr(resp, "completion_text", None)
         if isinstance(text, str) and text:
             resp.completion_text = decorate_answer(event, text)
+            state = event.get_extra("wf_knowledge_rag")
+            if isinstance(state, dict):
+                self._get_knowledge_monitor().record_response(event.unified_msg_origin, state["stats"])
 
     @filter.command("wfmapdel")
     async def wfmapdel(self, event: AstrMessageEvent, args: GreedyStr):
@@ -1428,7 +1484,7 @@ class WarframeHelperPlugin(Star):
             ),
             WorldstateRow(
                 title="知识增强聊天",
-                subtitle="群聊 @bot 或直接私聊；管理员：/wf知识 问题 | 答案 | 来源链接；/wf知识 初始化、查看、删除、列表",
+                subtitle="群聊 @bot 或直接私聊；管理员：/wf知识 收录 标题 | 正文 | 来源；/wf知识 资料包、导入、状态、测试、评测、查看、删除、列表",
             ),
             WorldstateRow(
                 title="工具",

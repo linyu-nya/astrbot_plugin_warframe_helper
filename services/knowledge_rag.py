@@ -88,6 +88,13 @@ async def prepare_rag(
         for part in native_parts:
             hits.extend(_native_hits(part.text))
         outcome = "native_reused" if hits else "native_unparsed"
+        if hits and hasattr(service, "enrich_native_hits"):
+            hits = service.enrich_native_hits(hits)
+            if not hits:
+                outcome = "native_empty"
+                # Known managed documents removed from the registry must not
+                # re-enter the model through stale native index entries.
+                parts[:] = [part for part in parts if part not in native_parts]
     elif native_configured:
         outcome = "native_empty"
     else:
@@ -130,6 +137,10 @@ def decorate_answer(event, text: str) -> str:
         return f"[{numbers[identity]}]"
 
     answer = _CITATION.sub(replace, text)
+    if _CITATION.search(text):
+        state["stats"]["citations_used"] = len(used)
+    else:
+        state["stats"].setdefault("citations_used", 0)
     if not used:
         return answer
     lines = [answer.rstrip(), "", "知识库参考（本轮回答引用）："]

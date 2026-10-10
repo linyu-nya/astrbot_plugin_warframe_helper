@@ -227,6 +227,7 @@ def _load_main_handlers(monkeypatch: pytest.MonkeyPatch):
     empty_module("services.auto_push", AutoPushService=object)
     empty_module("services.knowledge_base", KnowledgeService=object, KnowledgeUnavailable=RuntimeError, addressed_knowledge_question=lambda _event: None, parse_knowledge_command=lambda _raw: None)
     empty_module("services.knowledge_rag", prepare_rag=lambda *_args, **_kwargs: None, decorate_answer=lambda _event, text: text)
+    empty_module("services.knowledge_diagnostics", KnowledgeRagMonitor=lambda: SimpleNamespace(record=log, record_response=log), format_status=lambda *_args, **_kwargs: "status", evaluate_retrieval=lambda *_args, **_kwargs: None)
     empty_module("services.fissure_sorting", fissure_tier_sort_enabled=lambda *_args: False)
     empty_module(
         "services.no_prefix_routing",
@@ -340,6 +341,45 @@ async def test_private_rag_preserves_native_ai_persona_and_web_tools(monkeypatch
     plugin.config["knowledge_base"]["private_enabled"] = False
     await plugin.wf_knowledge_rag_request(PrivateEvent("未知问题"), untouched)
     assert untouched.extra_user_content_parts == []
+
+
+@pytest.mark.asyncio
+async def test_topic_and_status_commands_keep_admin_permissions(monkeypatch):
+    from test_knowledge_base import parse_knowledge_command
+    module = _load_main_handlers(monkeypatch)
+    module.parse_knowledge_command = parse_knowledge_command
+    plugin = _handler_plugin(module, Mapper(), WikiClient())
+    plugin.config = {}
+    plugin.context = SimpleNamespace(get_config=lambda **_kwargs: {})
+    calls = []
+
+    class Service:
+        async def upsert_topic(self, *args):
+            calls.append(("topic", args))
+
+        async def status(self):
+            calls.append(("status",))
+            return {}
+
+    class AdminEvent(HandlerEvent):
+        unified_msg_origin = "qq:FriendMessage:123"
+
+        def get_sender_id(self):
+            return "123"
+
+        def plain_result(self, text):
+            return text
+
+    plugin._get_knowledge_service = lambda: Service()
+    plugin._knowledge_monitor = SimpleNamespace(summary=lambda _session: {})
+    denied = AdminEvent(False)
+    assert "无权限" in (await _collect(plugin.wf_knowledge(denied, "收录 机制 | 内容")))[0]
+    assert calls == []
+    allowed = AdminEvent(True)
+    assert (await _collect(plugin.wf_knowledge(allowed, "收录 机制 | 内容"))) == ["已收录主题资料：机制"]
+    assert calls[0] == ("topic", ("机制", "内容", "", "123"))
+    assert (await _collect(plugin.wf_knowledge(allowed, "状态"))) == ["status"]
+    assert calls[-1] == ("status",)
 
 
 @pytest.mark.asyncio

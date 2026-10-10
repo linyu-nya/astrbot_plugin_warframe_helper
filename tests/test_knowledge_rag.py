@@ -137,6 +137,18 @@ async def test_unknown_native_format_preserves_original_context_without_retry():
 
 
 @pytest.mark.asyncio
+async def test_deleted_managed_native_documents_are_not_reinjected():
+    class ServiceWithoutDeletedEntries(Service):
+        def enrich_native_hits(self, hits):
+            return []
+    native = Part("[Related Knowledge Base Results]:\n【知识 1】\n来源: Warframe / wfkb-deleted.txt\n内容: 过期资料\n相关度: 0.1")
+    memory = Part("本轮记忆")
+    req = request([memory, native])
+    result = await rag.prepare_rag(Event(), req, ServiceWithoutDeletedEntries(), part_factory=Part)
+    assert result["outcome"] == "native_empty" and req.extra_user_content_parts == [memory]
+
+
+@pytest.mark.asyncio
 async def test_citations_only_include_used_documents_and_never_invent_links():
     event = Event()
     req = request()
