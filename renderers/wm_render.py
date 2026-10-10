@@ -47,8 +47,8 @@ def _placeholder_avatar_data_uri() -> str:
     return svg_text_to_data_uri(
         """
         <svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>
-          <circle cx='32' cy='32' r='32' fill='#e2e8f0'/>
-          <text x='32' y='40' text-anchor='middle' font-size='28' fill='#64748b' font-family='Arial, sans-serif'>?</text>
+          <circle cx='32' cy='32' r='32' fill='#344c50'/>
+          <path d='M32 12L48 32L32 52L16 32Z' fill='none' stroke='#96b7aa' stroke-width='2'/>
         </svg>
         """.strip()
     )
@@ -59,6 +59,9 @@ def _build_wm_html(
     title: str,
     item_img_uri: str | None,
     rows: list[dict[str, str]],
+    item_name: str = "",
+    platform: str = "",
+    action_cn: str = "",
 ) -> str:
     item_background_style = (
         f"background-image: linear-gradient(135deg, rgba(224,231,255,0.86), rgba(219,234,254,0.86)), url('{item_img_uri}');"
@@ -69,6 +72,9 @@ def _build_wm_html(
     context: dict[str, object] = {
         "page": {
             "title": title,
+            "item_name": item_name,
+            "platform": platform,
+            "action_cn": action_cn,
             "item_img_uri": item_img_uri or "",
             "item_background_style": item_background_style,
             "rows": rows,
@@ -135,12 +141,15 @@ async def render_wm_orders_image_to_file(
             }
         )
 
-    html = _build_wm_html(title=title, item_img_uri=item_uri, rows=rows)
+    html = _build_wm_html(
+        title=title, item_img_uri=item_uri, rows=rows,
+        item_name=item_name, platform=platform, action_cn=action_cn,
+    )
     path = await render_html_to_png_file(
         html=html,
         width=920,
         prefix=f"wm_{item.slug}",
-        min_height=680,
+        min_height=360,
     )
     if not path:
         return None
